@@ -1,0 +1,23 @@
+/* AcquaThermoNet HMI, 800x480 touch panel */
+
+QMainWindow                     { background: #333333; }
+
+QStatusBar                      { color: lightgray; font: 9pt; }
+
+/* Zone card */
+QFrame#zoneCard                 { background: #2A2A2A; border: 2px solid #1A1A1A; border-radius: 6px; }
+QFrame#zoneCard[alarm="true"]   { border: 2px solid #AD1625; }
+QFrame#zoneSeparator            { border: none; background: #444444; max-height: 1px; }
+
+QLabel                          { color: lightgray; font: 10pt; }
+QLabel#zoneName                 { color: white; font: bold 13pt; }
+QLabel#zoneTemp                 { color: white; font: bold 28pt; }
+QLabel#zoneInfo                 { color: #AAAAAA; font: 9pt; }
+QLabel#zoneSetPoint             { color: white; font: bold 16pt; }
+QLabel#zoneStatus               { color: #AAAAAA; font: 9pt; }
+QLabel#zoneStatus[alarm="true"] { color: white; background: #AD1625; font: bold 9pt; border-radius: 3px; }
+
+QPushButton                     { color: white; font: bold 20pt; background: #AD1625; border: none; border-radius: 6px; }
+QPushButton:pressed             { background: #6E0A1E; }
+QPushButton#zoneMinus,
+QPushButton#zonePlus            { min-height: 56px; }

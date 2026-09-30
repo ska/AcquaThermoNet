@@ -1,0 +1,9 @@
+<jmlauncher>
+<package>
+  <name>AcquaThermoNet</name>
+  <installationFolder>AcquaThermoNet</installationFolder>
+  <version>@VERSION@</version>
+  <executeAsRoot>@EXECUTE_AS_ROOT@</executeAsRoot>
+  <background>@BACKGROUND@</background>
+</package>
+</jmlauncher>

@@ -1,0 +1,9 @@
+<RCC>
+    <qresource prefix="/">
+    <file>qss/default.qss</file>
+    <file>images/flame-black.png</file>
+    <file>images/flame-red.png</file>
+    <file>images/heat-black.png</file>
+    <file>images/heat-red.png</file>
+    </qresource>
+</RCC>

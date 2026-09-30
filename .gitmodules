@@ -1,0 +1,10 @@
+[submodule "ThirdParty/qtmqtt"]
+	path = ThirdParty/qtmqtt
+	url = https://github.com/qt/qtmqtt.git
+[submodule "ThirdParty/qtserialport"]
+	path = ThirdParty/qtserialport
+	url = https://github.com/qt/qtserialport.git
+[submodule "ThirdParty/openssl"]
+	path = ThirdParty/openssl
+	url = https://github.com/openssl/openssl.git
+	shallow = true
