@@ -8,7 +8,12 @@ that drives the boiler room (pumps and zone valves) from those readings.
 You do not need the AcquaThermoNet source code: everything the gateway must
 do is here.
 
-Interface version: matches AcquaThermoNet **2.2.1** (unchanged since 2.1.0).
+RoomSense also has a panel in the house: it shows the zones and changes
+their setpoints, always through AcquaThermoNet, which owns them (§7).
+
+Interface version: matches AcquaThermoNet **2.2.2**. The readings are
+unchanged since 2.1.0; the setpoint commands of §7 use topics the
+controller already handles: no change in AcquaThermoNet.
 
 ---
 
@@ -28,22 +33,25 @@ flowchart LR
     PLANT["Pumps and<br/>zone valves"]
 
     BLE1 & BLE2 & BLEn -- "BLE advertising" --> GW
-    GW -- "RoomSense/apartment/ZONE/data" --> B
-    B --> ATN
+    GW -- "RoomSense/apartment/ZONE/data<br/>AcquaThermoNet/ZONE/set_temp" --> B
+    B -- "AcquaThermoNet/status, ZONE/state_temp, ZONE/state_mode" --> GW
+    B <--> ATN
     B --> HA
     ATN -- "Modbus RTU" --> PLANT
 ```
 
 | | RoomSense (sensor gateway) | AcquaThermoNet |
 |---|---|---|
-| Owns | BLE scanning, decoding, sensor → zone mapping, filtering | zones, setpoints, regulation, relays |
-| Publishes | one reading per zone on `RoomSense/apartment/<zone>/data` | its own topics under `AcquaThermoNet/…` (not for the gateway) |
-| Subscribes | nothing required | `RoomSense/apartment/#` |
+| Owns | BLE scanning, decoding, sensor → zone mapping, filtering; the house panel | zones, **setpoints** (the only source of truth), regulation, relays |
+| Publishes | one reading per zone on `RoomSense/apartment/<zone>/data`; setpoint commands on `AcquaThermoNet/<zone>/set_temp` (§7) | its own topics under `AcquaThermoNet/…` |
+| Subscribes | `AcquaThermoNet/status`, `AcquaThermoNet/<zone>/state_temp`, `…/state_mode` (§7) | `RoomSense/apartment/#`, `AcquaThermoNet/#` |
 
-The two applications never talk directly: only through the broker. There is
-no request/response, no acknowledgement: the gateway publishes, the
-controller consumes. **Home Assistant reads the same topic** to show the
-current temperature of each zone (its climate entities point to it).
+The two applications never talk directly: only through the broker. For
+the readings there is no request/response, no acknowledgement: the gateway
+publishes, the controller consumes. For a setpoint the confirmation is the
+controller's retained `state_temp` (§7). **Home Assistant reads the same
+reading topic** to show the current temperature of each zone (its climate
+entities point to it), and sends setpoints the same way as the panel.
 
 ---
 
@@ -61,6 +69,8 @@ current temperature of each zone (its climate entities point to it).
 | Retain | **false** (see §6) |
 | Rate | every 60–300 s per zone; **never** less often than every 15 min |
 | Stale data | **stop publishing** a zone whose sensor is no longer heard |
+| Setpoint commands | `AcquaThermoNet/<zone>/set_temp`, plain number, retain false (§7) |
+| Controller state read | `AcquaThermoNet/status`, `…/<zone>/state_temp`, `…/<zone>/state_mode`, all retained (§7) |
 
 ---
 
@@ -239,13 +249,70 @@ Home Assistant): gateway availability with a Will message.
 |---|---|---|
 | `RoomSense/status` | `online` at connect, `offline` as Will | yes |
 
-Do **not** put it under `RoomSense/apartment/`, and do not publish anything
-under `AcquaThermoNet/` or `homeassistant/climate/`: those topics belong to
-the controller.
+Do **not** put it under `RoomSense/apartment/`. Under `AcquaThermoNet/`
+publish only the setpoint commands of §7 (`AcquaThermoNet/<zone>/set_temp`),
+and nothing under `homeassistant/climate/`: those topics belong to the
+controller.
 
 ---
 
-## 7. Testing the integration
+## 7. Setpoints from the RoomSense panel
+
+The panel in the house shows each zone with its setpoint and lets the user
+change it, like Home Assistant does. **AcquaThermoNet owns the setpoints**:
+it rounds, clamps, stores and applies them, and they also change from its
+own panel and from Home Assistant. RoomSense never keeps a setpoint of its
+own: it shows what the controller publishes and sends commands.
+
+| Topic | Dir. (RoomSense) | Payload | Retain | Notes |
+|---|---|---|---|---|
+| `AcquaThermoNet/status` | in | `online` / `offline` | yes | `offline` (also as the controller's Will): no commands |
+| `AcquaThermoNet/<zone>/state_temp` | in | setpoint, e.g. `20` or `20.5` | yes | the value to show; republished after **every** command, also when unchanged or clamped |
+| `AcquaThermoNet/<zone>/state_mode` | in | `heat` / `off` | yes | heat demand of the zone (heating icon) |
+| `AcquaThermoNet/<zone>/set_temp` | **out** | plain number, e.g. `21.5` (not JSON) | **no** | rounded to 0.5 and clamped to 5…25 by the controller |
+
+Rules for the gateway:
+
+1. **Only `set_temp`.** Never publish `state_temp`, `state_mode`,
+   `set_mode` or `AcquaThermoNet/status`.
+2. **Retain false.** A retained command would be applied again at every
+   controller restart, undoing the changes made since then from its panel
+   or Home Assistant.
+3. **Show the confirmed value.** After a command show the new value as
+   pending until `state_temp` arrives; without it within ~5 s, show the
+   last `state_temp` again (command lost or controller busy).
+4. **Collect the presses.** Several +/- presses become one command per
+   zone, at most one per second (the controller also delays its flash
+   write until the presses stop).
+5. **Controller not reachable** (`AcquaThermoNet/status` `offline`, no
+   `state_temp` received yet, or the broker disconnected): show the last
+   known setpoints and send no command.
+6. **Same zone names** as the readings (§3). A command for an unknown zone
+   is ignored silently; a payload that is not a number is logged by the
+   controller (`Invalid setpoint for zone …`) and ignored.
+7. QoS 1 for the commands, so that a press is not lost silently up to the
+   broker; any QoS for the subscriptions.
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant GW as RoomSense panel
+    participant B as Broker
+    participant ATN as AcquaThermoNet
+
+    U->>GW: + + (20.5 to 21.5)
+    Note over GW: 21.5 shown as pending, presses collected
+    GW->>B: AcquaThermoNet/salotto/set_temp 21.5
+    B->>ATN: command
+    ATN->>ATN: round 0.5, clamp 5..25, store, regulate
+    ATN->>B: AcquaThermoNet/salotto/state_temp 21.5 (retained)
+    B->>GW: state_temp 21.5
+    Note over GW: 21.5 shown as confirmed
+```
+
+---
+
+## 8. Testing the integration
 
 With `mosquitto_pub` (or the gateway itself), against the real broker:
 
@@ -260,6 +327,10 @@ mosquitto_sub -h <broker> -u <user> -P <password> -v -t 'RoomSense/#'
 
 # watch the controller reacting (setpoint and heat demand per zone)
 mosquitto_sub -h <broker> -u <user> -P <password> -v -t 'AcquaThermoNet/#'
+
+# a setpoint command, as the panel sends it (§7)
+mosquitto_pub -h <broker> -u <user> -P <password> \
+  -t AcquaThermoNet/salotto/set_temp -m 21.3
 ```
 
 What to check:
@@ -273,13 +344,16 @@ What to check:
 | Battery 15 | card shows `BATTERY LOW 15%`, Telegram alarm |
 | Stop the sensor for 15 min | card shows `NO SENSOR`, zone OFF, Telegram alarm |
 | Home Assistant | the `clima.<zone>` entity shows the current temperature |
+| `set_temp` 21.3 | `AcquaThermoNet/salotto/state_temp 21.5` (retained), the controller panel and Home Assistant show 21.5 |
+| `set_temp` 40 | clamped: `state_temp 25` |
+| Controller stopped | `AcquaThermoNet/status offline`: the RoomSense panel shows the setpoints as last known, no commands |
 
 The controller's Telegram bot (`/zone salotto`) also shows the last reading
 and how long ago it arrived.
 
 ---
 
-## 8. Acceptance checklist for RoomSense
+## 9. Acceptance checklist for RoomSense
 
 - [ ] Topic `RoomSense/apartment/<zone>/data`, zone names from configuration, exact case
 - [ ] JSON object with numeric `temperature` in °C in every message
@@ -290,13 +364,15 @@ and how long ago it arrived.
 - [ ] Retain false; no stale buffered readings sent after a reconnect
 - [ ] Several sensors in one zone combined into one value by the gateway
 - [ ] Own client id; optional `RoomSense/status` availability with Will
-- [ ] Nothing published under `AcquaThermoNet/` or `homeassistant/climate/`
+- [ ] Under `AcquaThermoNet/` only `…/<zone>/set_temp` (plain number, retain false); nothing under `homeassistant/climate/`
+- [ ] Setpoints shown from the retained `state_temp`, pending until confirmed; no commands while the controller is offline
 
 ---
 
-## 9. Changing the contract
+## 10. Changing the contract
 
-The topic prefix, the field names and the timeout are defined in
+The topic prefixes and tails, the field names, the setpoint step and range
+(`TEMP_STEP`, `TEMP_MIN`, `TEMP_MAX`) and the timeout are defined in
 AcquaThermoNet (`climatezones.h`, `mqttparse.cpp`, `[REGULATION]
 sensor_timeout_s`). Any change on either side (new zone, renamed zone,
 different topic or field) must be agreed and made in both applications at

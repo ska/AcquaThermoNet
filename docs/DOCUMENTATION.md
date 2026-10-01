@@ -5,7 +5,7 @@ It reads room temperatures from MQTT sensors, drives the zone valves through
 a Modbus RTU relay board and appears in Home Assistant as one climate entity
 per zone. Alarms and status also go to Telegram.
 
-This document describes version **2.2.1**. The same content, with rendered
+This document describes version **2.2.2**. The same content, with rendered
 diagrams, is in [`AcquaThermoNet.html`](AcquaThermoNet.html). Telegram
 setup: [`TELEGRAM.md`](TELEGRAM.md). Deployment package:
 [`../tools/package/README.md`](../tools/package/README.md).
@@ -44,7 +44,7 @@ setup: [`TELEGRAM.md`](TELEGRAM.md). Deployment package:
 | | |
 |---|---|
 | Application | `AcquaThermoNet`, Qt 5 Widgets, C++17 |
-| Target | ARM32 HMI (i5/i7 class), 800×480 touch, custom init (no systemd), launched by JMLauncher |
+| Target | UN60 HMI (ARM32 Cortex-A8), 800×480 touch, custom init (no systemd), launched by JMLauncher |
 | Development | Linux x86_64, Qt 5.13.2 (Qt 5.15 also builds) |
 | Zones | configurable list, up to 8 relays (`RELAY_NUM_MAX`) |
 | Room sensors | BLE sensors, published over MQTT (JSON, one topic per zone) by the **RoomSense** gateway |
@@ -101,7 +101,7 @@ flowchart LR
     end
 
     S1 & S2 & S3 -- "BLE" --> RS
-    RS -- "RoomSense/apartment/+/data" --> B
+    RS <-- "RoomSense/apartment/+/data<br/>setpoints" --> B
     B <--> APP
     HA <--> B
     APP -- "RS485 9600 8N1" --> RB
@@ -113,7 +113,8 @@ flowchart LR
 
 - The **BLE sensors** are read by **RoomSense**, a separate application in
   the house, which publishes one reading per zone on the broker; the
-  application subscribes to them.
+  application subscribes to them. The RoomSense panel also shows and sets
+  the setpoints, like Home Assistant, only through the broker.
 - **Home Assistant** shows and sets the zones only through the broker: it never
   talks to the panel directly, and the panel keeps regulating without it.
 - The **relay board** is the only actuator; the application is the only
@@ -298,7 +299,7 @@ discovery.
 | `homeassistant/climate/<zone>/config` | out | discovery JSON (5.3) | yes | at connect and when HA comes online |
 | `AcquaThermoNet/<zone>/state_temp` | out | setpoint, e.g. `20` or `20.5` | yes | after every setpoint command, also when clamped |
 | `AcquaThermoNet/<zone>/state_mode` | out | `heat` / `off` | yes | heat demand of the zone |
-| `AcquaThermoNet/<zone>/set_temp` | in | number, e.g. `21.5` | – | rounded to 0.5, clamped to 5…25 |
+| `AcquaThermoNet/<zone>/set_temp` | in | number, e.g. `21.5` | – | rounded to 0.5, clamped to 5…25; from Home Assistant and the RoomSense panel |
 | `AcquaThermoNet/<zone>/set_mode` | in | `heat` / anything else = off | – | not advertised to HA, see §22 |
 | `RoomSense/apartment/<zone>/data` | in | sensor JSON (5.4) | – | also HA `curr_temp_t` |
 | `homeassistant/status` | in | `online` | – | HA restarted: republish discovery |
@@ -374,7 +375,8 @@ their previous value. Every valid message resets the zone sensor timeout.
 Messages for zones not in `[ZONES] list` are ignored.
 
 Full contract for RoomSense, the application that publishes the sensors
-(BLE gateway): [`SENSOR_GATEWAY_INTERFACE.md`](SENSOR_GATEWAY_INTERFACE.md).
+(BLE gateway) and whose panel sets the setpoints:
+[`SENSOR_GATEWAY_INTERFACE.md`](SENSOR_GATEWAY_INTERFACE.md).
 
 ### 5.5 Message flows
 
@@ -1063,7 +1065,14 @@ The working directory is `deploy/` (`start.sh` changes to it):
 |---|---|---|
 | Desktop x86_64 | 5.13.2 (`/home/devel/Sviluppi/Qt/5.13.2`) | OpenSSL 1.1.1w built from the submodule and preloaded |
 | Desktop x86_64 | 5.15.x | optional, uses the system OpenSSL 3 |
-| Device ARM32 | SDK 1.3.x (`cortexa7hf-neon-poky-linux-gnueabi`) | OpenSSL 1.1 from the SDK; QtSerialPort static (not on the panel) |
+| Device UN60 (Cortex-A8) | SDK UN60 1.3.4 (`/home/devel/Sviluppi/Sdk/1.3.4-un60`, `cortexa8hf-neon-poky-linux-gnueabi`), Qt 5.13.2 | OpenSSL 1.1 from the SDK; QtSerialPort and QtMqtt static (not on the panel) |
+
+The SDK must match the panel family: `Sdk/1.3.x` is the **UN83** SDK
+(`cortexa7hf`); its binaries use the hardware integer division of the
+Cortex-A7 (`sdiv`/`udiv`, ELF `Tag_CPU_name` `7VE`) and stop with
+`Illegal instruction` on the UN60. A UN60 binary is generic ARMv7-A
+(`readelf -A`: `Tag_CPU_name: "7-A"`). The `atn-package` Claude Code skill
+builds the release package from the tag and checks this.
 
 ### 18.2 Project layout
 
@@ -1099,7 +1108,7 @@ make -j4
 ./bin_x86_64/AcquaThermoNet --version
 
 # device (the package zip is built after the link)
-source /home/devel/Sviluppi/Sdk/1.3.x/environment-setup-cortexa7hf-neon-poky-linux-gnueabi
+source /home/devel/Sviluppi/Sdk/1.3.4-un60/environment-setup-cortexa8hf-neon-poky-linux-gnueabi
 mkdir build-arm && cd build-arm
 qmake ../AcquaThermoNet.pro
 make -j4
@@ -1120,12 +1129,12 @@ generated `version.h`):
 
 | Build | Version |
 |---|---|
-| exactly at tag `v2.2.1` | `2.2.1` |
-| commits after the tag | `2.2.1-<short hash>` |
+| exactly at tag `v2.2.2` | `2.2.2` |
+| commits after the tag | `2.2.2-<short hash>` |
 | no git / no tag | `0.0.0` |
 
-Banner: `AcquaThermoNet v2.2.1 (git 1a2b3c4, built 2026-09-30 06:48:12 UTC)`
-(`-dirty` with uncommitted changes). Release: `git tag -a v2.2.1 -m v2.2.1`,
+Banner: `AcquaThermoNet v2.2.2 (git 1a2b3c4, built 2026-09-30 06:48:12 UTC)`
+(`-dirty` with uncommitted changes). Release: `git tag -a v2.2.2 -m v2.2.2`,
 then rerun qmake.
 
 ### 18.5 OpenSSL on the desktop
@@ -1244,6 +1253,8 @@ Needs an ini with at least 5 zones (the image in §10).
 | `Telegram message from a chat not allowed, ignored: chat id N` | add N to `allowed_chats` |
 | `Relays OFF not confirmed on exit` | board unreachable during shutdown |
 | `Err open /dev/watchdog, watchdog disabled` | normal on the desktop; on the device check root |
+| `error while loading shared libraries: libQt5…so.5` on the panel | a Qt module the panel does not have: link it statically (`ThirdParty/qtmodules.pri`), as QtMqtt and QtSerialPort |
+| `Illegal instruction (core dumped)` on the panel | binary built with the wrong SDK (UN83, Cortex-A7): rebuild with the UN60 SDK, §18.1 |
 | HA shows the entities *unavailable* | `AcquaThermoNet/status` is `offline`: application stopped or disconnected |
 | HA entities duplicated after reinstall | `unique_id` changed: fix it in `[MQTT] unique_id` |
 
@@ -1261,6 +1272,6 @@ Needs an ini with at least 5 zones (the image in §10).
   model string is fixed (`AcquaThermoNet Ver 0.1`).
 - UI, log and Telegram texts are English only; `tr()` translation planned.
 - To verify on the real device: CA certificates for TLS/HTTPS, JMLauncher
-  handling of versions like `2.2.1-<hash>`, `background` flag, serial port
+  handling of versions like `2.2.2-<hash>`, `background` flag, serial port
   reopen after `kill -9`.
 - Qt 6 port postponed.
