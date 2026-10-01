@@ -9,6 +9,7 @@ int runLoggingTests(int argc, char *argv[]);
 int runModbusTests(int argc, char *argv[]);
 int runMonoClockTests(int argc, char *argv[]);
 int runMqttParseTests(int argc, char *argv[]);
+int runNetInfoTests(int argc, char *argv[]);
 int runRegulationTests(int argc, char *argv[]);
 int runRelayLogTests(int argc, char *argv[]);
 int runTelegramTests(int argc, char *argv[]);
@@ -23,6 +24,7 @@ int main(int argc, char *argv[])
     failed += runMonoClockTests(argc, argv);
     failed += runModbusTests(argc, argv);
     failed += runMqttParseTests(argc, argv);
+    failed += runNetInfoTests(argc, argv);
     failed += runConfigTests(argc, argv);
     failed += runZoneModelTests(argc, argv);
     failed += runRegulationTests(argc, argv);

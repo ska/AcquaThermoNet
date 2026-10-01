@@ -8,6 +8,7 @@ Assistant integration via MQTT discovery, Telegram alarms.
   (HTML version with rendered diagrams: [`docs/AcquaThermoNet.html`](docs/AcquaThermoNet.html),
   regenerated with `tools/docs/md2html.py`)
 - Telegram setup: [`docs/TELEGRAM.md`](docs/TELEGRAM.md)
+- MQTT interface with RoomSense (BLE sensor gateway): [`docs/SENSOR_GATEWAY_INTERFACE.md`](docs/SENSOR_GATEWAY_INTERFACE.md)
 - Deployment package: [`tools/package/README.md`](tools/package/README.md)
 
 Quick build (desktop):

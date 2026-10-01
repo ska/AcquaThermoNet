@@ -5,6 +5,7 @@
 #include "QtMqtt/QMqttClient"
 #include <QObject>
 #include <QTimer>
+#include <QHostAddress>
 #include <QSslSocket>
 #include "climatezones.h"
 #include "zonemodel.h"
@@ -26,6 +27,9 @@ public:
 
     void shutdown();
     bool isDisconnected() const { return m_client->state() == QMqttClient::Disconnected; }
+
+    /* Local address of the broker connection, null when not connected */
+    QHostAddress localAddress() const;
 
 public slots:
     void forceReconnectToHost();

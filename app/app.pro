@@ -31,6 +31,7 @@ SOURCES += \
     $$ATN_SRC/monoclock.cpp \
     $$ATN_SRC/mqtt.cpp \
     $$ATN_SRC/mqttparse.cpp \
+    $$ATN_SRC/netinfo.cpp \
     $$ATN_SRC/opensslpreload.cpp \
     $$ATN_SRC/relaylog.cpp \
     $$ATN_SRC/serialuart.cpp \
@@ -54,6 +55,7 @@ HEADERS += \
     $$ATN_SRC/monoclock.h \
     $$ATN_SRC/mqtt.h \
     $$ATN_SRC/mqttparse.h \
+    $$ATN_SRC/netinfo.h \
     $$ATN_SRC/opensslpreload.h \
     $$ATN_SRC/relaylog.h \
     $$ATN_SRC/common.h \
@@ -119,6 +121,8 @@ PKG_ARCH = $${QT_ARCH}
 equals(QT_ARCH, "arm"):     PKG_ARCH = Arm32
 equals(QT_ARCH, "arm64"):   PKG_ARCH = Arm64
 if(equals(QT_ARCH, "arm")|equals(QT_ARCH, "arm64")|CONFIG(package)):!CONFIG(nopackage) {
-    QMAKE_POST_LINK += $$quote($${ATN_SRC}/tools/package/make_package.sh --bin-dir $$DESTDIR --arch $$PKG_ARCH --out-dir $$ATN_BUILD/dist ;)
+    # $(STRIP) / $(CXX): the toolchain of this Makefile (the strip is searched
+    # next to the compiler when the SDK environment is not loaded, Qt Creator)
+    QMAKE_POST_LINK += $$quote($${ATN_SRC}/tools/package/make_package.sh --bin-dir $$DESTDIR --arch $$PKG_ARCH --out-dir $$ATN_BUILD/dist --strip \"$(STRIP)\" --cxx \"$(CXX)\" ;)
     message("Package: $$ATN_BUILD/dist ($$PKG_ARCH)")
 }

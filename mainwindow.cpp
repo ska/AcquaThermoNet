@@ -2,13 +2,16 @@
 #include "ui_mainwindow.h"
 
 #include "monoclock.h"
+#include "netinfo.h"
 #include <QFile>
 #include <QTimer>
+#include <QGridLayout>
 
 MainWindow::MainWindow(ZoneModel *zones, Mqtt *mq, QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
     , m_zones(zones)
+    , m_mqtt(mq)
 {
     /*
      * styleSheet
@@ -18,6 +21,38 @@ MainWindow::MainWindow(ZoneModel *zones, Mqtt *mq, QWidget *parent)
     qApp->setStyleSheet(QString::fromUtf8(file.readAll()));
     ui->setupUi(this);
     ui->statusbar->setSizeGripEnabled(false);
+
+    /* Two rows at the bottom, status and network identity, one grid cell
+     * per field: a column is as wide as its longest field, so the '|' of
+     * the two rows line up. Labels, not showMessage(): a temporary message
+     * would hide the widgets. */
+    QWidget *bottom = new QWidget(this);
+    QGridLayout *grid = new QGridLayout(bottom);
+    grid->setContentsMargins(4, 0, 0, 0);
+    grid->setHorizontalSpacing(10);
+    grid->setVerticalSpacing(0);
+    for(int row = 0; row < 2; row++)
+    {
+        for(int f = 0; f < BAR_FIELDS; f++)
+        {
+            if(f > 0)
+            {
+                QLabel *sep = new QLabel("|", bottom);
+                sep->setObjectName(row == 0 ? "barStatus" : "barNetwork");
+                grid->addWidget(sep, row, 2*f - 1);
+                m_barSeparators[row].append(sep);
+            }
+            QLabel *field = new QLabel(bottom);
+            field->setObjectName(row == 0 ? "barStatus" : "barNetwork");
+            grid->addWidget(field, row, 2*f);
+            m_barFields[row].append(field);
+        }
+    }
+    /* last field (weather) clipped rather than widening the window */
+    for(int row = 0; row < 2; row++)
+        m_barFields[row].last()->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    grid->setColumnStretch(2*BAR_FIELDS - 2, 1);
+    ui->statusbar->addWidget(bottom, 1);
 
     m_mqttStatus    = "MQTT: disconnected";
     m_serialOpen    = false;
@@ -41,6 +76,13 @@ MainWindow::MainWindow(ZoneModel *zones, Mqtt *mq, QWidget *parent)
     QTimer *refreshTimer = new QTimer(this);
     connect(refreshTimer, &QTimer::timeout, this, &MainWindow::refreshAllZones);
     refreshTimer->start(5*1000);
+
+    /* IP/interface: when the broker connection changes (it tells which
+     * interface is used) and periodically (DHCP, cable, Wi-Fi) */
+    QTimer *networkTimer = new QTimer(this);
+    connect(networkTimer, &QTimer::timeout, this, &MainWindow::updateNetworkInfo);
+    networkTimer->start(30*1000);
+    updateNetworkInfo();
 
     updateStatusbar();
 }
@@ -94,6 +136,7 @@ void MainWindow::clientStateChanged(quint8 state)
         break;
     }
     updateStatusbar();
+    updateNetworkInfo();
 }
 
 void MainWindow::onModbusOnlineChanged(bool online)
@@ -125,7 +168,41 @@ void MainWindow::updateStatusbar()
     QStringList parts = { QString("%1 v%2").arg(SW_NAME).arg(SW_VER), m_mqttStatus, modbus };
     if(!m_weatherInfo.isEmpty())
         parts.append(m_weatherInfo);
-    ui->statusbar->showMessage(parts.join("   |   "));
+    setBarRow(0, parts);
+}
+
+/**
+ * @brief MainWindow::setBarRow
+ * Fields beyond the given ones (and their separator) are hidden
+ */
+void MainWindow::setBarRow(int row, const QStringList &fields)
+{
+    for(int f = 0; f < BAR_FIELDS; f++)
+    {
+        const bool shown = f < fields.size();
+        m_barFields[row][f]->setText(fields.value(f));
+        m_barFields[row][f]->setVisible(shown);
+        if(f > 0)
+            m_barSeparators[row][f-1]->setVisible(shown);
+    }
+}
+
+/**
+ * @brief MainWindow::updateNetworkInfo
+ * Interface used for the broker, else the first active one
+ */
+void MainWindow::updateNetworkInfo()
+{
+    setNetworkInfo(NetInfo::current(m_mqtt->localAddress()));
+}
+
+/**
+ * @brief MainWindow::setNetworkInfo
+ * @param info  second row of the bar
+ */
+void MainWindow::setNetworkInfo(const NetInfo::Info &info)
+{
+    setBarRow(1, NetInfo::fields(info));
 }
 
 void MainWindow::refreshAllZones()

@@ -5,7 +5,7 @@ It reads room temperatures from MQTT sensors, drives the zone valves through
 a Modbus RTU relay board and appears in Home Assistant as one climate entity
 per zone. Alarms and status also go to Telegram.
 
-This document describes version **2.1.0**. The same content, with rendered
+This document describes version **2.2.0**. The same content, with rendered
 diagrams, is in [`AcquaThermoNet.html`](AcquaThermoNet.html). Telegram
 setup: [`TELEGRAM.md`](TELEGRAM.md). Deployment package:
 [`../tools/package/README.md`](../tools/package/README.md).
@@ -47,7 +47,7 @@ setup: [`TELEGRAM.md`](TELEGRAM.md). Deployment package:
 | Target | ARM32 HMI (i5/i7 class), 800×480 touch, custom init (no systemd), launched by JMLauncher |
 | Development | Linux x86_64, Qt 5.13.2 (Qt 5.15 also builds) |
 | Zones | configurable list, up to 8 relays (`RELAY_NUM_MAX`) |
-| Room sensors | "RoomSense" JSON over MQTT, one topic per zone |
+| Room sensors | BLE sensors, published over MQTT (JSON, one topic per zone) by the **RoomSense** gateway |
 | Actuators | 8-relay Modbus RTU board on RS485, device id 1 |
 | Home Assistant | MQTT discovery, one `climate` entity per zone |
 | Outdoor data | api.met.no (default) or wttr.in |
@@ -73,9 +73,10 @@ Main features:
 ```mermaid
 flowchart LR
     subgraph Rooms
-        S1["RoomSense sensor<br/>(salotto)"]
-        S2["RoomSense sensor<br/>(camera)"]
+        S1["BLE sensor<br/>(salotto)"]
+        S2["BLE sensor<br/>(camera)"]
         S3["... one per zone"]
+        RS["RoomSense<br/>BLE to MQTT gateway"]
     end
 
     subgraph LAN
@@ -99,7 +100,8 @@ flowchart LR
         TG["api.telegram.org"]
     end
 
-    S1 & S2 & S3 -- "RoomSense/apartment/+/data" --> B
+    S1 & S2 & S3 -- "BLE" --> RS
+    RS -- "RoomSense/apartment/+/data" --> B
     B <--> APP
     HA <--> B
     APP -- "RS485 9600 8N1" --> RB
@@ -109,7 +111,9 @@ flowchart LR
     APP -. "keepalive" .-> WD
 ```
 
-- The **sensors** publish on the broker; the application subscribes to them.
+- The **BLE sensors** are read by **RoomSense**, a separate application in
+  the house, which publishes one reading per zone on the broker; the
+  application subscribes to them.
 - **Home Assistant** shows and sets the zones only through the broker: it never
   talks to the panel directly, and the panel keeps regulating without it.
 - The **relay board** is the only actuator; the application is the only
@@ -342,7 +346,7 @@ The mode shown in HA is the **heat demand** (`heat` while the zone asks for
 heat, `off` when satisfied): HA cannot switch it, there is no
 `mode_command_topic`.
 
-### 5.4 Sensor payload (RoomSense)
+### 5.4 Sensor payload (RoomSense gateway)
 
 ```json
 {
@@ -368,6 +372,9 @@ A message without a valid `temperature`, or not a JSON object, is rejected
 and logged (`Invalid sensor data for zone …`); missing optional fields keep
 their previous value. Every valid message resets the zone sensor timeout.
 Messages for zones not in `[ZONES] list` are ignored.
+
+Full contract for RoomSense, the application that publishes the sensors
+(BLE gateway): [`SENSOR_GATEWAY_INTERFACE.md`](SENSOR_GATEWAY_INTERFACE.md).
 
 ### 5.5 Message flows
 
@@ -401,7 +408,7 @@ Sensor reading:
 
 ```mermaid
 sequenceDiagram
-    participant S as RoomSense
+    participant S as RoomSense gateway
     participant B as Broker
     participant MQ as Mqtt
     participant ZM as ZoneModel
@@ -700,8 +707,15 @@ Status line, by priority:
 | `no relay - updated <age>` | no | zone without relay |
 | `updated <age>` | no | normal |
 
-Status bar: `AcquaThermoNet v<version> | MQTT: connected/connecting/disconnected |
-Modbus: online/OFFLINE/port closed | <LOCATION> <temp>°C <hum>% <press>hPa`.
+Status bar, two rows of fields with the `|` separators aligned in columns:
+
+- `AcquaThermoNet v<version> | MQTT: connected/connecting/disconnected |
+  Modbus: online/OFFLINE/port closed | <LOCATION> <temp>°C <hum>% <press>hPa`;
+- `Host: <hostname> | IP: <IPv4> | MAC: <hardware address>` of the interface used
+  for the MQTT broker connection; while MQTT is not connected, of the first
+  active non loopback interface with an IPv4 (`Network: none` if none, `MAC: --`
+  for interfaces without one, e.g. a VPN). Refreshed when the broker
+  connection changes and every 30 s (DHCP, cable, Wi-Fi).
 
 Cards refresh every 5 s (ages and countdowns) and on every change. On the
 device the window is full screen, frameless and on top; style sheet
@@ -1103,12 +1117,12 @@ generated `version.h`):
 
 | Build | Version |
 |---|---|
-| exactly at tag `v2.1.0` | `2.1.0` |
-| commits after the tag | `2.1.0-<short hash>` |
+| exactly at tag `v2.2.0` | `2.2.0` |
+| commits after the tag | `2.2.0-<short hash>` |
 | no git / no tag | `0.0.0` |
 
-Banner: `AcquaThermoNet v2.1.0 (git 1a2b3c4, built 2026-09-30 06:48:12 UTC)`
-(`-dirty` with uncommitted changes). Release: `git tag -a v2.1.0 -m v2.1.0`,
+Banner: `AcquaThermoNet v2.2.0 (git 1a2b3c4, built 2026-09-30 06:48:12 UTC)`
+(`-dirty` with uncommitted changes). Release: `git tag -a v2.2.0 -m v2.2.0`,
 then rerun qmake.
 
 ### 18.5 OpenSSL on the desktop
@@ -1125,7 +1139,9 @@ at start (`OpenSSL 1.1 preloaded from …`). Development only.
 
 Built by `tools/package/make_package.sh` after every ARM link:
 `AcquaThermoNet_Package_Arm32_<version>.zip`, installed by the device
-launcher (JMLauncher). Full details: [`tools/package/README.md`](../tools/package/README.md).
+launcher (JMLauncher). The binary in the zip is stripped; the one with the
+debug information is kept next to it (`AcquaThermoNet_Arm32_<version>.debug`)
+to read core dumps from the device. Full details: [`tools/package/README.md`](../tools/package/README.md).
 
 ```mermaid
 flowchart LR
@@ -1242,6 +1258,6 @@ Needs an ini with at least 5 zones (the image in §10).
   model string is fixed (`AcquaThermoNet Ver 0.1`).
 - UI, log and Telegram texts are English only; `tr()` translation planned.
 - To verify on the real device: CA certificates for TLS/HTTPS, JMLauncher
-  handling of versions like `2.1.0-<hash>`, `background` flag, serial port
+  handling of versions like `2.2.0-<hash>`, `background` flag, serial port
   reopen after `kill -9`.
 - Qt 6 port postponed.

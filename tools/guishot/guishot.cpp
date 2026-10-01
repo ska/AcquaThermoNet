@@ -76,8 +76,20 @@ int main(int argc, char *argv[])
 
     w.show();
     QTimer::singleShot(800, [&] {
-        w.grab().save(argv[2]);
-        a.quit();
+        /* Sample network identity: never the one of the build machine */
+        NetInfo::Info net;
+        net.hostname  = "hmi-boiler";
+        net.interface = "eth0";
+        net.ip        = "192.168.1.20";
+        net.mac       = "00:30:D8:12:34:56";
+        /* MQTT state changes would refresh it with the real interfaces */
+        QObject::disconnect(&mq, nullptr, &w, nullptr);
+        w.setNetworkInfo(net);
+        /* let the layout adapt to the new texts before the capture */
+        QTimer::singleShot(200, [&] {
+            w.grab().save(argv[2]);
+            a.quit();
+        });
     });
     return a.exec();
 }

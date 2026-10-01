@@ -3,6 +3,9 @@
 QMainWindow                     { background: #333333; }
 
 QStatusBar                      { color: lightgray; font: 9pt; }
+QStatusBar::item                { border: none; }
+QLabel#barStatus                { color: lightgray; font: 9pt; }
+QLabel#barNetwork               { color: #AAAAAA; font: 9pt; }
 
 /* Zone card */
 QFrame#zoneCard                 { background: #2A2A2A; border: 2px solid #1A1A1A; border-radius: 6px; }

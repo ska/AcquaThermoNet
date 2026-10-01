@@ -19,6 +19,7 @@ SOURCES += \
     $$ATN_SRC/monoclock.cpp \
     $$ATN_SRC/mqtt.cpp \
     $$ATN_SRC/mqttparse.cpp \
+    $$ATN_SRC/netinfo.cpp \
     $$ATN_SRC/zonecard.cpp \
     $$ATN_SRC/zonemodel.cpp
 

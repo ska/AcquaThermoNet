@@ -267,6 +267,18 @@ void Mqtt::shutdown()
 }
 
 /**
+ * @brief Mqtt::localAddress
+ * Socket of the connection: ours with TLS, the one of QtMqtt otherwise
+ */
+QHostAddress Mqtt::localAddress() const
+{
+    if(m_client->state() != QMqttClient::Connected)
+        return QHostAddress();
+    const QAbstractSocket *socket = m_tlsSocket ? m_tlsSocket : qobject_cast<QAbstractSocket *>(m_client->transport());
+    return socket ? socket->localAddress() : QHostAddress();
+}
+
+/**
  * @brief Mqtt::zoneTopic
  * @return AcquaThermoNet/<zone>
  */

@@ -14,12 +14,23 @@ from the device.
 build (Arm32, Arm64), so building in Qt Creator or with `make` is enough:
 
 ```
-<build dir>/dist/AcquaThermoNet_Package_Arm32_2.0.0.zip
+<build dir>/dist/AcquaThermoNet_Package_Arm32_2.2.0.zip
+<build dir>/dist/AcquaThermoNet_Arm32_2.2.0.debug
 ```
 
 - desktop builds: only with `CONFIG+=package` (qmake argument);
 - ARM builds without the package: `CONFIG+=nopackage`;
 - it runs only when the binary is relinked, not on a no-op `make`.
+
+Debug information: the binary in the zip is **stripped** (the SDK compiles
+with `-g` also in release: 17 MB with, about 0.5 MB without). The full
+binary is kept next to the zip as `AcquaThermoNet_<arch>_<version>.debug`:
+keep it with the release to read a core dump of the device
+(`gdb AcquaThermoNet_Arm32_2.2.0.debug core`; `start.sh` enables core
+dumps). The strip is the one of the build toolchain (`$(STRIP)` of the
+Makefile, searched next to the compiler when the SDK environment is not
+loaded, as in Qt Creator); a missing or wrong strip stops the packaging
+with an error. `--no-strip` packages the full binary.
 
 Version: the latest git tag `vX.Y.Z`, the same as the application
 (`version.pri`; `--version` to override); built after the tag, the commit
@@ -34,13 +45,14 @@ then rerun qmake and build (the version is taken when qmake runs).
 By hand:
 
 ```
-tools/package/make_package.sh --bin-dir <build>/bin_arm --arch Arm32
+tools/package/make_package.sh --bin-dir <build>/bin_arm --arch Arm32 \
+    --strip arm-poky-linux-gnueabi-strip      # SDK environment loaded
 ```
 
 ## Content
 
 ```
-AcquaThermoNet              binary (QtMqtt linked statically)
+AcquaThermoNet              binary, stripped (QtMqtt linked statically)
 setting.default.ini         configuration template
 package.info                name, version, installationFolder, executeAsRoot=true, background=false
 install.sh uninstall.sh update.sh run.sh start.sh stop.sh

@@ -21,6 +21,7 @@ SOURCES += \
     tst_modbus.cpp \
     tst_monoclock.cpp \
     tst_mqttparse.cpp \
+    tst_netinfo.cpp \
     tst_relaylog.cpp \
     tst_telegram.cpp \
     tst_regulation.cpp \
@@ -32,6 +33,7 @@ SOURCES += \
     $$SRC/modbusframeprocessor.cpp \
     $$SRC/monoclock.cpp \
     $$SRC/mqttparse.cpp \
+    $$SRC/netinfo.cpp \
     $$SRC/relaylog.cpp \
     $$SRC/telegramnotifier.cpp \
     $$SRC/termoregolazione.cpp \
