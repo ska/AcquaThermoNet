@@ -34,8 +34,9 @@ Required:
   --arch <label>      Architecture label in the file name: Arm32, Arm64, x86_64
 
 Options:
-  --lib-dir <dir>     Shared libraries to bundle in lib/ (not needed today:
-                      QtMqtt is static, the rest comes from the device); only
+  --lib-dir <dir>     Shared libraries to bundle in deploy/lib/ (not needed
+                      today: QtMqtt and QtSerialPort are static, the rest
+                      comes from the device); only
                       the real files are packaged, install.sh makes the
                       soname symlinks. Default: none
   --version <ver>     Package version (default: the latest git tag vX.Y.Z,
@@ -104,7 +105,11 @@ out_dir="$(cd "$out_dir" && pwd)"
 staging="$(mktemp -d)"
 trap 'rm -rf "$staging"' EXIT
 
-cp "$binary" "$staging/AcquaThermoNet"
+# Layout of the panel packages: descriptor and launcher hooks at the top,
+# the application with its start.sh (and working directory) in deploy/
+deploy="$staging/deploy"
+mkdir -p "$deploy"
+cp "$binary" "$deploy/AcquaThermoNet"
 
 # Debug information stripped from the packaged binary (about 30x smaller);
 # the full binary is kept next to the zip, with the same version in the
@@ -125,15 +130,16 @@ if [ "$do_strip" = "true" ]; then
         exit 1
     fi
     # a strip of another architecture fails here instead of packaging garbage
-    if ! "$strip_path" --strip-unneeded "$staging/AcquaThermoNet"; then
+    if ! "$strip_path" --strip-unneeded "$deploy/AcquaThermoNet"; then
         echo "error: '$strip_path' cannot strip $binary (wrong toolchain?)" >&2
         exit 1
     fi
     debug_copy="$out_dir/AcquaThermoNet_${arch}_${version}.debug"
     cp "$binary" "$debug_copy"
 fi
-cp "$repo_root/setting.default.ini" "$staging/"
-for f in install.sh uninstall.sh update.sh run.sh start.sh stop.sh; do
+cp "$repo_root/setting.default.ini" "$deploy/"
+cp "$template_dir/start.sh" "$deploy/"
+for f in install.sh uninstall.sh update.sh run.sh stop.sh; do
     cp "$template_dir/$f" "$staging/"
 done
 sed -e "s/@VERSION@/$version/" \
@@ -142,13 +148,13 @@ sed -e "s/@VERSION@/$version/" \
     "$template_dir/package.info.in" > "$staging/package.info"
 
 if [ -n "$lib_dir" ]; then
-    mkdir -p "$staging/lib"
+    mkdir -p "$deploy/lib"
     # fully versioned files only (libX.so.A.B.C): install.sh recreates the
     # .so.A.B / .so.A / .so names (copies of them in lib_dir are skipped)
-    find "$lib_dir" -maxdepth 1 -regex '.*\.so\.[0-9]+\.[0-9]+\.[0-9]+' -exec cp -L {} "$staging/lib/" \;
+    find "$lib_dir" -maxdepth 1 -regex '.*\.so\.[0-9]+\.[0-9]+\.[0-9]+' -exec cp -L {} "$deploy/lib/" \;
 fi
 
-chmod +x "$staging/AcquaThermoNet" "$staging"/*.sh
+chmod +x "$deploy/AcquaThermoNet" "$deploy/start.sh" "$staging"/*.sh
 
 out_zip="$out_dir/AcquaThermoNet_Package_${arch}_${version}.zip"
 rm -f "$out_zip"

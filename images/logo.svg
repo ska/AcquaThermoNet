@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 210" width="200" height="210">
+  <title>AcquaThermoNet</title>
+  <defs>
+    <linearGradient id="flame" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#F59E0B"/>
+      <stop offset="0.45" stop-color="#E0485A"/>
+      <stop offset="1" stop-color="#AD1625"/>
+    </linearGradient>
+    <linearGradient id="core" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#FDE68A"/>
+      <stop offset="1" stop-color="#F59E0B"/>
+    </linearGradient>
+    <linearGradient id="drop" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7DD3FC"/>
+      <stop offset="1" stop-color="#0EA5E9"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.62" r="0.5">
+      <stop offset="0" stop-color="#E0485A" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#E0485A" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <!-- water drop -->
+  <path d="M100 14 C 100 14 38 88 38 128 A 62 62 0 0 0 162 128 C 162 88 100 14 100 14 Z"
+        fill="#0B1118" stroke="url(#drop)" stroke-width="8" stroke-linejoin="round"/>
+  <circle cx="100" cy="125" r="55" fill="url(#glow)"/>
+  <!-- flame -->
+  <path d="M101 58 C 114 84 138 100 133 134 C 130 158 114 172 100 172 C 84 172 67 159 67 137
+           C 67 115 82 106 88 86 C 95 98 98 108 106 113 C 109 96 107 77 101 58 Z" fill="url(#flame)"/>
+  <path d="M102 112 C 110 126 120 134 117 150 C 115 161 108 167 100 167 C 91 167 84 160 84 150
+           C 84 139 92 134 95 124 C 98 130 100 134 104 136 C 105 128 105 120 102 112 Z" fill="url(#core)"/>
+  <!-- network -->
+  <g stroke="#7DD3FC" stroke-width="4" stroke-linecap="round">
+    <line x1="30" y1="176" x2="100" y2="194"/>
+    <line x1="100" y1="194" x2="170" y2="176"/>
+  </g>
+  <g fill="#0B1118" stroke="#7DD3FC" stroke-width="4">
+    <circle cx="30" cy="176" r="8"/>
+    <circle cx="100" cy="194" r="8"/>
+    <circle cx="170" cy="176" r="8"/>
+  </g>
+</svg>

@@ -1,6 +1,6 @@
 #!/bin/sh
-# Entry point invoked by the launcher (JMLauncher). Runs start.sh (the
-# restart loop around the application) in a subshell and does the
+# Entry point invoked by the launcher (JMLauncher). Runs deploy/start.sh
+# (the restart loop around the application) in a subshell and does the
 # launcher's pid-file and dbus bookkeeping around it, as the reference
 # Qt HMI package and CanGateway do. The pid file name is specific to this
 # package so it cannot collide with other runtimes on the same device.
@@ -19,7 +19,9 @@ echo $PGID > $PIDFILE # save pid for termination
     export USER=$(busybox whoami)
     export HOME=$(eval echo ~$USER)
     echo "Starting AcquaThermoNet as user \"$USER\" with home \"$HOME\""
-    ./start.sh "$@"
+    # the boot splash of the panel must not stay over the HMI
+    killall xsplash 2>/dev/null
+    ./deploy/start.sh "$@"
     if [ -z "$FASTBOOT" ] && (pidof jmlauncher >/dev/null 2>&1); then
         dbus-send --print-reply --system --dest=com.exor.JMLauncher '/' com.exor.JMLauncher.appFinished string:"AcquaThermoNet"
     fi
@@ -27,6 +29,9 @@ echo $PGID > $PIDFILE # save pid for termination
     rm -f $PIDFILE
     pkill -TERM -s "$PID" # kill all child spawned processes if any
 ) &
+
+# ensure the boot splash is gone (as the reference panel packages do)
+killall xsplash 2>/dev/null
 
 # wait for the application to come up
 sleep 5

@@ -8,7 +8,7 @@ that drives the boiler room (pumps and zone valves) from those readings.
 You do not need the AcquaThermoNet source code: everything the gateway must
 do is here.
 
-Interface version: matches AcquaThermoNet **2.2.0** (unchanged since 2.1.0).
+Interface version: matches AcquaThermoNet **2.2.1** (unchanged since 2.1.0).
 
 ---
 

@@ -13,31 +13,32 @@ BACKUP=/tmp/acquathermonet-backup
 
 dbus-send --print-reply --system --dest=com.exor.JMLauncher '/' com.exor.JMLauncher.showProgress string:"AcquaThermoNet install" int32:-1
 
-chmod +x AcquaThermoNet ./*.sh
+chmod +x deploy/AcquaThermoNet ./*.sh deploy/*.sh
 result=0
 
 # libX.so.5.13.2 -> libX.so.5.13, libX.so.5, libX.so
-for lib in lib/*.so.*.*.*; do
+for lib in deploy/lib/*.so.*.*.*; do
     [ -f "$lib" ] || continue
     name=$(basename "$lib")
     base=${name%%.so.*}.so
     ver=${name#*.so.}
     major=${ver%%.*}
     minor=${ver#*.}; minor=${minor%%.*}
-    ln -sf "$name" "lib/$base.$major.$minor" || result=1
-    ln -sf "$name" "lib/$base.$major" || result=1
-    ln -sf "$name" "lib/$base" || result=1
+    ln -sf "$name" "deploy/lib/$base.$major.$minor" || result=1
+    ln -sf "$name" "deploy/lib/$base.$major" || result=1
+    ln -sf "$name" "deploy/lib/$base" || result=1
 done
 
-# Restore the device configuration and state kept across an update
+# Restore the device configuration and state kept across an update, into
+# deploy/ (the working directory of the application)
 if [ -d "$BACKUP" ]; then
     for f in setting.ini state.ini; do
-        if [ -f "$BACKUP/$f" ] && [ ! -f "$f" ]; then
-            cp -p "$BACKUP/$f" "$f" || result=1
+        if [ -f "$BACKUP/$f" ] && [ ! -f "deploy/$f" ]; then
+            cp -p "$BACKUP/$f" "deploy/$f" || result=1
         fi
     done
-    if [ -d "$BACKUP/log" ] && [ ! -d log ]; then
-        cp -rp "$BACKUP/log" log || result=1
+    if [ -d "$BACKUP/log" ] && [ ! -d deploy/log ]; then
+        cp -rp "$BACKUP/log" deploy/log || result=1
     fi
     if [ $result -eq 0 ]; then
         rm -rf "$BACKUP"

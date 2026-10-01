@@ -5,7 +5,7 @@ It reads room temperatures from MQTT sensors, drives the zone valves through
 a Modbus RTU relay board and appears in Home Assistant as one climate entity
 per zone. Alarms and status also go to Telegram.
 
-This document describes version **2.2.0**. The same content, with rendered
+This document describes version **2.2.1**. The same content, with rendered
 diagrams, is in [`AcquaThermoNet.html`](AcquaThermoNet.html). Telegram
 setup: [`TELEGRAM.md`](TELEGRAM.md). Deployment package:
 [`../tools/package/README.md`](../tools/package/README.md).
@@ -1036,19 +1036,21 @@ Installation folder of the package (`installationFolder` `AcquaThermoNet`;
 
 ```
 AcquaThermoNet/
-├── AcquaThermoNet            binary
-├── setting.default.ini       template (package)
-├── setting.ini               device configuration (by hand, kept on update)
-├── state.ini                 application state (kept on update)
-├── package.info              JMLauncher descriptor
-├── run.sh start.sh stop.sh   lifecycle
+├── package.info                  JMLauncher descriptor
+├── run.sh stop.sh                launcher hooks
 ├── install.sh uninstall.sh update.sh
-└── log/
-    ├── AcquaThermoNet.log    (.1 .2 .3 rotated)
-    └── relays-YYYY-MM.csv
+└── deploy/
+    ├── AcquaThermoNet            binary
+    ├── start.sh                  environment and restart loop
+    ├── setting.default.ini       template (package)
+    ├── setting.ini               device configuration (by hand, kept on update)
+    ├── state.ini                 application state (kept on update)
+    └── log/
+        ├── AcquaThermoNet.log    (.1 .2 .3 rotated)
+        └── relays-YYYY-MM.csv
 ```
 
-The working directory is the package folder (`start.sh` changes to it):
+The working directory is `deploy/` (`start.sh` changes to it):
 `setting.ini`, `state.ini` and relative log paths are resolved from there.
 
 ---
@@ -1061,7 +1063,7 @@ The working directory is the package folder (`start.sh` changes to it):
 |---|---|---|
 | Desktop x86_64 | 5.13.2 (`/home/devel/Sviluppi/Qt/5.13.2`) | OpenSSL 1.1.1w built from the submodule and preloaded |
 | Desktop x86_64 | 5.15.x | optional, uses the system OpenSSL 3 |
-| Device ARM32 | SDK 1.3.x (`cortexa7hf-neon-poky-linux-gnueabi`) | QtSerialPort and OpenSSL 1.1 from the SDK |
+| Device ARM32 | SDK 1.3.x (`cortexa7hf-neon-poky-linux-gnueabi`) | OpenSSL 1.1 from the SDK; QtSerialPort static (not on the panel) |
 
 ### 18.2 Project layout
 
@@ -1072,15 +1074,16 @@ flowchart LR
     TOP -. "CONFIG+=tests" .-> TST["tests/tests.pro"]
     TOP -. "CONFIG+=tools" .-> GS["tools/guishot/guishot.pro"]
     TP --> MQ["qtmqtt (submodule, static)"]
-    TP --> SP["qtserialport (submodule, static, desktop only)"]
+    TP --> SP["qtserialport (submodule, static)"]
     TP --> SSL["openssl 1.1.1w (submodule, desktop Qt < 5.15)"]
     APP --> BIN["bin_ARCH/AcquaThermoNet"]
     APP -- "ARM: post link" --> PKG["dist/AcquaThermoNet_Package_Arm32_VERSION.zip"]
 ```
 
 - `ThirdParty` builds the missing Qt modules from the git submodules at
-  v5.13.2 as **static** libraries (QtMqtt always, QtSerialPort only if the Qt
-  in use lacks it), only when the library is missing.
+  v5.13.2 as **static** libraries (QtMqtt and QtSerialPort: the panel has
+  neither, even if the SDK sysroot has QtSerialPort), only when the library
+  is missing.
 - Sources are in the repository root; `.qmake.conf` defines `ATN_SRC` and
   `ATN_BUILD` for every sub-project.
 
@@ -1117,12 +1120,12 @@ generated `version.h`):
 
 | Build | Version |
 |---|---|
-| exactly at tag `v2.2.0` | `2.2.0` |
-| commits after the tag | `2.2.0-<short hash>` |
+| exactly at tag `v2.2.1` | `2.2.1` |
+| commits after the tag | `2.2.1-<short hash>` |
 | no git / no tag | `0.0.0` |
 
-Banner: `AcquaThermoNet v2.2.0 (git 1a2b3c4, built 2026-09-30 06:48:12 UTC)`
-(`-dirty` with uncommitted changes). Release: `git tag -a v2.2.0 -m v2.2.0`,
+Banner: `AcquaThermoNet v2.2.1 (git 1a2b3c4, built 2026-09-30 06:48:12 UTC)`
+(`-dirty` with uncommitted changes). Release: `git tag -a v2.2.1 -m v2.2.1`,
 then rerun qmake.
 
 ### 18.5 OpenSSL on the desktop
@@ -1149,19 +1152,19 @@ flowchart LR
         U1["uninstall.sh<br/>stop.sh, save setting.ini,<br/>state.ini, log/ to /tmp/acquathermonet-backup"] --> U2["unzip new package"]
         U2 --> U3["install.sh<br/>restore backup, dbus installFinished"]
     end
-    U3 --> R1["run.sh<br/>pid file, dbus appLoaded / appFinished"]
-    R1 --> R2["start.sh<br/>environment + restart loop"]
+    U3 --> R1["run.sh<br/>close boot splash, pid file,<br/>dbus appLoaded / appFinished"]
+    R1 --> R2["deploy/start.sh<br/>environment + restart loop"]
     R2 --> APP["AcquaThermoNet"]
     ST["stop.sh<br/>SIGTERM, wait, kill after 15 s"] -. SIGTERM .-> APP
 ```
 
 | Script | Role |
 |---|---|
-| `run.sh` | launcher entry point; starts `start.sh`, pid file `/var/run/acquathermonet-run.pid`, `appLoaded`/`appFinished` dbus notifications |
-| `start.sh` | `DISPLAY`, xcb, plugins, `LD_LIBRARY_PATH`; restart loop (exit 0/3 stop it) |
+| `run.sh` | launcher entry point; closes the boot splash (`xsplash`), starts `deploy/start.sh`, pid file `/var/run/acquathermonet-run.pid`, `appLoaded`/`appFinished` dbus notifications |
+| `deploy/start.sh` | `DISPLAY`, xcb, plugins, `LD_LIBRARY_PATH`; restart loop (exit 0/3 stop it) |
 | `stop.sh` | SIGTERM, waits the clean shutdown, kills after 15 s |
-| `uninstall.sh` | stop + backup of `setting.ini`, `state.ini`, `log/` |
-| `install.sh` | restore of the backup, `showProgress`/`installFinished` |
+| `uninstall.sh` | stop + backup of `deploy/setting.ini`, `state.ini`, `log/` |
+| `install.sh` | restore of the backup into `deploy/`, `showProgress`/`installFinished` |
 | `update.sh` | nothing to do (`updateFinished`) |
 
 `package.info`: name and folder `AcquaThermoNet`, version, `executeAsRoot=true`
@@ -1258,6 +1261,6 @@ Needs an ini with at least 5 zones (the image in §10).
   model string is fixed (`AcquaThermoNet Ver 0.1`).
 - UI, log and Telegram texts are English only; `tr()` translation planned.
 - To verify on the real device: CA certificates for TLS/HTTPS, JMLauncher
-  handling of versions like `2.2.0-<hash>`, `background` flag, serial port
+  handling of versions like `2.2.1-<hash>`, `background` flag, serial port
   reopen after `kill -9`.
 - Qt 6 port postponed.

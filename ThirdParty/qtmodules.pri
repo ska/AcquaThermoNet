@@ -4,16 +4,16 @@
 #
 #   QtMqtt       not in any of the Qt used (desktop 5.13.2, device SDK):
 #                always from ThirdParty/qtmqtt, static
-#   QtSerialPort in the device Qt (SDK sysroot): used from there;
-#                missing in the desktop Qt: from ThirdParty/qtserialport, static
+#   QtSerialPort always from ThirdParty/qtserialport, static: missing in the
+#                desktop Qt, and on the device only in the SDK sysroot, not
+#                on the panel (libQt5SerialPort.so.5 not found at start)
 #
 # Include it in a project to link them; ThirdParty.pro must be built first
 # (the top level AcquaThermoNet.pro takes care of the order).
 
 ATN_THIRDPARTY_BUILD = $$ATN_BUILD/ThirdParty
 
-qtHaveModule(serialport): ATN_BUILD_SERIALPORT = false
-else:                     ATN_BUILD_SERIALPORT = true
+ATN_BUILD_SERIALPORT = true
 
 # OpenSSL: Qt loads it at run time (dlopen). Qt < 5.15 needs OpenSSL 1.1,
 # missing on recent desktop distributions (OpenSSL 3): on the desktop

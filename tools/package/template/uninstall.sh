@@ -14,9 +14,9 @@ BACKUP=/tmp/acquathermonet-backup
 rm -rf "$BACKUP"
 mkdir -p "$BACKUP"
 for f in setting.ini state.ini; do
-    [ -f "$f" ] && cp -p "$f" "$BACKUP/"
+    [ -f "deploy/$f" ] && cp -p "deploy/$f" "$BACKUP/"
 done
-[ -d log ] && cp -rp log "$BACKUP/"
+[ -d deploy/log ] && cp -rp deploy/log "$BACKUP/"
 sync
 
 echo "AcquaThermoNet uninstall: configuration, state and log saved to $BACKUP" | logger -t AcquaThermoNet

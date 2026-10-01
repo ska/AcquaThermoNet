@@ -2,11 +2,14 @@
 
 `make_package.sh` builds the zip installed on the device by its launcher
 (JMLauncher): a `package.info` descriptor, the lifecycle hooks and the
-payload. Layout and hooks follow the CanGateway package for the same
-devices (`WeSoftware/CanGateway/tools/package`), adapted to a full screen
-Qt HMI. No Qt library is bundled: QtMqtt is linked statically (built from
-the `ThirdParty/qtmqtt` submodule), QtSerialPort and the rest of Qt come
-from the device.
+payload. Hooks follow the CanGateway package for the same devices
+(`WeSoftware/CanGateway/tools/package`), the layout the HMI panel packages
+(application and `start.sh` in `deploy/`). No Qt library is bundled:
+QtMqtt and QtSerialPort are linked statically (built from the
+`ThirdParty/qtmqtt` and `ThirdParty/qtserialport` submodules, the panel
+has no `libQt5SerialPort.so.5` although the SDK sysroot has it), the rest
+of Qt comes from the device. Run-time dependencies outside Qt: the C/C++
+libraries and `libudev.so.1` (used by QtSerialPort, present on the panel).
 
 ## Built with every build
 
@@ -14,8 +17,8 @@ from the device.
 build (Arm32, Arm64), so building in Qt Creator or with `make` is enough:
 
 ```
-<build dir>/dist/AcquaThermoNet_Package_Arm32_2.2.0.zip
-<build dir>/dist/AcquaThermoNet_Arm32_2.2.0.debug
+<build dir>/dist/AcquaThermoNet_Package_Arm32_2.2.1.zip
+<build dir>/dist/AcquaThermoNet_Arm32_2.2.1.debug
 ```
 
 - desktop builds: only with `CONFIG+=package` (qmake argument);
@@ -26,7 +29,7 @@ Debug information: the binary in the zip is **stripped** (the SDK compiles
 with `-g` also in release: 17 MB with, about 0.5 MB without). The full
 binary is kept next to the zip as `AcquaThermoNet_<arch>_<version>.debug`:
 keep it with the release to read a core dump of the device
-(`gdb AcquaThermoNet_Arm32_2.2.0.debug core`; `start.sh` enables core
+(`gdb AcquaThermoNet_Arm32_2.2.1.debug core`; `start.sh` enables core
 dumps). The strip is the one of the build toolchain (`$(STRIP)` of the
 Makefile, searched next to the compiler when the SDK environment is not
 loaded, as in Qt Creator); a missing or wrong strip stops the packaging
@@ -52,14 +55,20 @@ tools/package/make_package.sh --bin-dir <build>/bin_arm --arch Arm32 \
 ## Content
 
 ```
-AcquaThermoNet              binary, stripped (QtMqtt linked statically)
-setting.default.ini         configuration template
 package.info                name, version, installationFolder, executeAsRoot=true, background=false
-install.sh uninstall.sh update.sh run.sh start.sh stop.sh
+install.sh uninstall.sh update.sh run.sh stop.sh
+deploy/
+    AcquaThermoNet          binary, stripped (QtMqtt, QtSerialPort linked statically)
+    setting.default.ini     configuration template
+    start.sh                environment and restart loop
 ```
 
-- **run.sh**: entry point called by the launcher. Runs `start.sh` in a
-  subshell, keeps `/var/run/acquathermonet-run.pid`, sends the
+`deploy/` is also the working directory of the application: `setting.ini`,
+`state.ini` and `log/` are created there.
+
+- **run.sh**: entry point called by the launcher. Closes the boot splash
+  (`killall xsplash`, as the reference panel packages), runs `deploy/start.sh`
+  in a subshell, keeps `/var/run/acquathermonet-run.pid`, sends the
   `appLoaded`/`appFinished` dbus notifications.
 - **start.sh**: environment of the former root `start.sh` (DISPLAY, xcb, Qt
   plugins, virtual keyboard, `lib/` in `LD_LIBRARY_PATH`) and a restart
@@ -74,9 +83,10 @@ install.sh uninstall.sh update.sh run.sh start.sh stop.sh
   (relays OFF confirmed, MQTT offline); killed after 15s.
 - **install.sh**: restore of the files saved by `uninstall.sh`,
   `showProgress`/`installFinished` dbus notifications (and soname symlinks
-  for libraries in `lib/`, if a package ever bundles some with `--lib-dir`).
-- **uninstall.sh**: stops the application and saves `setting.ini`,
-  `state.ini` and `log/` to `/tmp/acquathermonet-backup`. The launcher's
+  for libraries in `deploy/lib/`, if a package ever bundles some with
+  `--lib-dir`); the backup is restored into `deploy/`.
+- **uninstall.sh**: stops the application and saves `deploy/setting.ini`,
+  `deploy/state.ini` and `deploy/log/` to `/tmp/acquathermonet-backup`. The launcher's
   update is uninstall + install (found on these devices for CanGateway),
   so this is what keeps the device configuration, setpoints, MQTT
   `unique_id`, relay history and relay activity log across an update.
