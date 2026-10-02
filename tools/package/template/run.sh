@@ -7,6 +7,9 @@
 
 cd "$(dirname "$0")"
 
+# D-Bus name of the panel launcher, looked up on the system bus
+launcher=$(dbus-send --system --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.ListNames 2>/dev/null | grep -o '"[^"]*\.JMLauncher"' | tr -d '"' | head -n 1)
+
 [ -e /etc/default/rcS ] && . /etc/default/rcS
 export FASTBOOT
 
@@ -23,7 +26,7 @@ echo $PGID > $PIDFILE # save pid for termination
     killall xsplash 2>/dev/null
     ./deploy/start.sh "$@"
     if [ -z "$FASTBOOT" ] && (pidof jmlauncher >/dev/null 2>&1); then
-        dbus-send --print-reply --system --dest=com.exor.JMLauncher '/' com.exor.JMLauncher.appFinished string:"AcquaThermoNet"
+        dbus-send --print-reply --system --dest="$launcher" '/' "$launcher".appFinished string:"AcquaThermoNet"
     fi
     PID="$(cat $PIDFILE)"
     rm -f $PIDFILE
@@ -38,6 +41,6 @@ sleep 5
 
 if pidof AcquaThermoNet > /dev/null; then
     if [ -z "$FASTBOOT" ]; then
-        dbus-send --print-reply --system --dest=com.exor.JMLauncher '/' com.exor.JMLauncher.appLoaded string:"AcquaThermoNet"
+        dbus-send --print-reply --system --dest="$launcher" '/' "$launcher".appLoaded string:"AcquaThermoNet"
     fi
 fi

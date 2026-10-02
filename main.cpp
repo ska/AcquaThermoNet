@@ -153,8 +153,15 @@ int main(int argc, char *argv[])
     /*
      * Weather
      * * */
-    Weather wh(conf.loadWeather());
+    const RegulationConfig regulation = conf.loadRegulation();
+    const WeatherConfig weatherConfig = conf.loadWeather();
+    Weather wh(weatherConfig);
     wh.startPoll();
+    /* HA outdoor sensors: unavailable when the frost protection would
+     * count the outdoor data as unknown */
+    mq->setWeatherConfig(weatherConfig.enabled(), regulation.frost.outdoorMaxAgeMin * 60,
+                         weatherConfig.provider == WeatherConfig::MetNo ? "met.no" : "wttr.in");
+    QObject::connect( &wh, &Weather::newWeatherInfo, mq, &Mqtt::setWeather );
 
     /*
      * WatchDog: refreshed by the main event loop, a hang reboots the board
@@ -178,7 +185,7 @@ int main(int argc, char *argv[])
     /*
      * Termoregolazione
      * * */
-    Termoregolazione *tr = new Termoregolazione(zones, frameProcessor, conf.loadRegulation(), &conf, &a);
+    Termoregolazione *tr = new Termoregolazione(zones, frameProcessor, regulation, &conf, &a);
     QString relayLogPath;
     int     relayLogKeep;
     conf.loadRelayLog(relayLogPath, relayLogKeep);

@@ -9,11 +9,13 @@ You do not need the AcquaThermoNet source code: everything the gateway must
 do is here.
 
 RoomSense also has a panel in the house: it shows the zones and changes
-their setpoints, always through AcquaThermoNet, which owns them (§7).
+their setpoints, always through AcquaThermoNet, which owns them (§7), and
+switches the whole house to the "windows open", "away" or "boost" mode
+(§8).
 
-Interface version: matches AcquaThermoNet **2.2.2**. The readings are
+Interface version: matches AcquaThermoNet **2.3.0**. The readings are
 unchanged since 2.1.0; the setpoint commands of §7 use topics the
-controller already handles: no change in AcquaThermoNet.
+controller handles since 2.2.2; the house mode of §8 needs 2.3.0.
 
 ---
 
@@ -33,8 +35,8 @@ flowchart LR
     PLANT["Pumps and<br/>zone valves"]
 
     BLE1 & BLE2 & BLEn -- "BLE advertising" --> GW
-    GW -- "RoomSense/apartment/ZONE/data<br/>AcquaThermoNet/ZONE/set_temp" --> B
-    B -- "AcquaThermoNet/status, ZONE/state_temp, ZONE/state_mode" --> GW
+    GW -- "RoomSense/apartment/ZONE/data<br/>AcquaThermoNet/ZONE/set_temp<br/>AcquaThermoNet/mode/set" --> B
+    B -- "AcquaThermoNet/status, ZONE/state_temp, ZONE/state_mode<br/>mode/state" --> GW
     B <--> ATN
     B --> HA
     ATN -- "Modbus RTU" --> PLANT
@@ -42,9 +44,9 @@ flowchart LR
 
 | | RoomSense (sensor gateway) | AcquaThermoNet |
 |---|---|---|
-| Owns | BLE scanning, decoding, sensor → zone mapping, filtering; the house panel | zones, **setpoints** (the only source of truth), regulation, relays |
-| Publishes | one reading per zone on `RoomSense/apartment/<zone>/data`; setpoint commands on `AcquaThermoNet/<zone>/set_temp` (§7) | its own topics under `AcquaThermoNet/…` |
-| Subscribes | `AcquaThermoNet/status`, `AcquaThermoNet/<zone>/state_temp`, `…/state_mode` (§7) | `RoomSense/apartment/#`, `AcquaThermoNet/#` |
+| Owns | BLE scanning, decoding, sensor → zone mapping, filtering; the house panel | zones, **setpoints** (the only source of truth), **house mode** (saved setpoints, timer, restore), regulation, relays |
+| Publishes | one reading per zone on `RoomSense/apartment/<zone>/data`; setpoint commands on `AcquaThermoNet/<zone>/set_temp` (§7); mode commands on `AcquaThermoNet/mode/set` (§8) | its own topics under `AcquaThermoNet/…` |
+| Subscribes | `AcquaThermoNet/status`, `AcquaThermoNet/<zone>/state_temp`, `…/state_mode` (§7), `AcquaThermoNet/mode/state` (§8) | `RoomSense/apartment/#`, `AcquaThermoNet/#` |
 
 The two applications never talk directly: only through the broker. For
 the readings there is no request/response, no acknowledgement: the gateway
@@ -71,6 +73,7 @@ entities point to it), and sends setpoints the same way as the panel.
 | Stale data | **stop publishing** a zone whose sensor is no longer heard |
 | Setpoint commands | `AcquaThermoNet/<zone>/set_temp`, plain number, retain false (§7) |
 | Controller state read | `AcquaThermoNet/status`, `…/<zone>/state_temp`, `…/<zone>/state_mode`, all retained (§7) |
+| House mode | command `AcquaThermoNet/mode/set` (`normal`/`window`/`away`/`boost`), state `AcquaThermoNet/mode/state` JSON, retained (§8) |
 
 ---
 
@@ -91,6 +94,8 @@ RoomSense/apartment/<zone>/data
   | `cameretta` | small bedroom |
   | `camera` | bedroom |
   | `bagno` | bathroom |
+
+  `mode` is reserved (house mode topics, §8): never a zone name.
 
   Confirm the list with whoever configures the controller: the zone names
   are the only shared configuration between the two applications. Make
@@ -273,8 +278,8 @@ own: it shows what the controller publishes and sends commands.
 
 Rules for the gateway:
 
-1. **Only `set_temp`.** Never publish `state_temp`, `state_mode`,
-   `set_mode` or `AcquaThermoNet/status`.
+1. **Only `set_temp`** (and `mode/set`, §8). Never publish `state_temp`,
+   `state_mode`, `set_mode`, `mode/state` or `AcquaThermoNet/status`.
 2. **Retain false.** A retained command would be applied again at every
    controller restart, undoing the changes made since then from its panel
    or Home Assistant.
@@ -312,7 +317,92 @@ sequenceDiagram
 
 ---
 
-## 8. Testing the integration
+## 8. House mode from the RoomSense panel
+
+Three modes for the whole house, chosen on the RoomSense panel. Like the
+setpoints, **AcquaThermoNet owns the mode**: it saves the setpoints,
+applies the mode, runs the timer and restores them, also when RoomSense
+is off or restarting.
+
+| Mode | Setpoint of every zone | Ends |
+|---|---|---|
+| `normal` | its own (as set from the panels or Home Assistant) | — |
+| `window` (windows open) | min(own, 8 °C) | after 30 min, or `normal` |
+| `away` (holidays) | min(own, 15 °C) | only with `normal` |
+| `boost` (heat the house quickly) | max(own, 25 °C) | after 30 min, or `normal` |
+
+The values (8 °C, 30 min, 15 °C, 25 °C, 30 min) are configurable in
+AcquaThermoNet (`[MODES]`). `window` and `away` never raise a setpoint (a
+zone kept lower stays at its own); `boost` never lowers one.
+
+| Topic | Dir. (RoomSense) | Payload | Retain | Notes |
+|---|---|---|---|---|
+| `AcquaThermoNet/mode/set` | **out** | `normal` / `window` / `away` / `boost` | **no** | QoS 1 |
+| `AcquaThermoNet/mode/state` | in | JSON, e.g. `{"mode":"window","remaining_s":1740}` | yes | after every command (also when unchanged or refused), at every change and every minute while `window` or `boost` runs |
+
+`mode/state` fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `mode` | string | `normal`, `window`, `away` or `boost` |
+| `remaining_s` | integer | `window` and `boost` only: seconds before the setpoints are restored. A countdown, not a time of day: the clocks of the two panels may differ |
+
+Behaviour of the controller:
+
+1. **Setpoints saved, not lost.** Entering a mode keeps each zone's own
+   setpoint (also across a controller restart); `normal`, or the end of
+   `window` or `boost`, restores them.
+2. **`state_temp` is the applied value** during a mode (e.g. 8), so that
+   both panels and Home Assistant show what the zone regulates to.
+3. **`set_temp` during a mode** (from Home Assistant or the controller
+   panel) changes the zone's own setpoint, restored when the mode ends;
+   `state_temp` keeps showing the applied value (e.g. min(new, 15)).
+4. **A new mode replaces the current one**, except `window` while `away`,
+   which is ignored (logged): `away` is already low. So `boost` ends
+   `away` (back home) and `window`, and `window` ends `boost` (opening the
+   windows stops the heating). A new `window` or `boost` restarts its
+   time. Every end goes back to `normal`, never to the previous mode.
+5. **Controller restart**: `away` continues; `window` and `boost` resume
+   with the time left (the controller keeps their end time), or end and
+   restore the setpoints if the time is over or the controller clock is
+   not set. `mode/state` is published again after the restart, with the
+   new `remaining_s`.
+6. **Invalid payload** on `mode/set`: logged
+   (`Invalid house mode …`) and ignored.
+
+Rules for the gateway:
+
+1. Show the mode from the retained `mode/state` only; after a command
+   show it as pending until `mode/state` arrives, as for `set_temp` (§7
+   rule 3).
+2. Count `remaining_s` down locally from the moment `mode/state` arrived;
+   a new message replaces it.
+3. While a mode is active, the zone −/+ are disabled on the panel: the
+   mode is left from the mode popup (`normal`).
+4. No command while the controller is not reachable (§7 rule 5);
+   retain false, QoS 1 (§7 rules 2 and 7).
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant GW as RoomSense panel
+    participant B as Broker
+    participant ATN as AcquaThermoNet
+
+    U->>GW: windows open
+    GW->>B: AcquaThermoNet/mode/set window
+    B->>ATN: command
+    ATN->>ATN: save setpoints, apply min(own, 8), start 30 min
+    ATN->>B: mode/state {"mode":"window","remaining_s":1800} (retained)
+    ATN->>B: ZONE/state_temp 8 for every zone (retained)
+    Note over GW: "Windows open, 30 min left", −/+ disabled
+    ATN->>ATN: 30 min later: restore the setpoints
+    ATN->>B: mode/state {"mode":"normal"}, ZONE/state_temp (own values)
+```
+
+---
+
+## 9. Testing the integration
 
 With `mosquitto_pub` (or the gateway itself), against the real broker:
 
@@ -331,6 +421,12 @@ mosquitto_sub -h <broker> -u <user> -P <password> -v -t 'AcquaThermoNet/#'
 # a setpoint command, as the panel sends it (§7)
 mosquitto_pub -h <broker> -u <user> -P <password> \
   -t AcquaThermoNet/salotto/set_temp -m 21.3
+
+# windows open for the whole house, then back to normal (§8)
+mosquitto_pub -h <broker> -u <user> -P <password> \
+  -t AcquaThermoNet/mode/set -m window
+mosquitto_pub -h <broker> -u <user> -P <password> \
+  -t AcquaThermoNet/mode/set -m normal
 ```
 
 What to check:
@@ -347,13 +443,17 @@ What to check:
 | `set_temp` 21.3 | `AcquaThermoNet/salotto/state_temp 21.5` (retained), the controller panel and Home Assistant show 21.5 |
 | `set_temp` 40 | clamped: `state_temp 25` |
 | Controller stopped | `AcquaThermoNet/status offline`: the RoomSense panel shows the setpoints as last known, no commands |
+| `mode/set window` | `mode/state {"mode":"window","remaining_s":1800}`, every `state_temp` at min(own, 8); after 30 min (or `normal`) the own setpoints again |
+| `mode/set away` | `mode/state {"mode":"away"}`, every `state_temp` at min(own, 15) until `normal` |
+| `mode/set boost` | `mode/state {"mode":"boost","remaining_s":1800}`, every `state_temp` at 25; after 30 min (or `normal`) the own setpoints again |
+| `set_temp` 22 during `away` | `state_temp 15`; after `normal`, `state_temp 22` |
 
 The controller's Telegram bot (`/zone salotto`) also shows the last reading
 and how long ago it arrived.
 
 ---
 
-## 9. Acceptance checklist for RoomSense
+## 10. Acceptance checklist for RoomSense
 
 - [ ] Topic `RoomSense/apartment/<zone>/data`, zone names from configuration, exact case
 - [ ] JSON object with numeric `temperature` in °C in every message
@@ -364,17 +464,18 @@ and how long ago it arrived.
 - [ ] Retain false; no stale buffered readings sent after a reconnect
 - [ ] Several sensors in one zone combined into one value by the gateway
 - [ ] Own client id; optional `RoomSense/status` availability with Will
-- [ ] Under `AcquaThermoNet/` only `…/<zone>/set_temp` (plain number, retain false); nothing under `homeassistant/climate/`
+- [ ] Under `AcquaThermoNet/` only `…/<zone>/set_temp` (plain number, retain false) and `mode/set` (`normal`/`window`/`away`/`boost`, retain false); nothing under `homeassistant/climate/`
 - [ ] Setpoints shown from the retained `state_temp`, pending until confirmed; no commands while the controller is offline
+- [ ] House mode shown from the retained `mode/state`, pending until confirmed, `remaining_s` counted down locally; zone −/+ disabled while a mode is active
 
 ---
 
-## 10. Changing the contract
+## 11. Changing the contract
 
 The topic prefixes and tails, the field names, the setpoint step and range
-(`TEMP_STEP`, `TEMP_MIN`, `TEMP_MAX`) and the timeout are defined in
-AcquaThermoNet (`climatezones.h`, `mqttparse.cpp`, `[REGULATION]
-sensor_timeout_s`). Any change on either side (new zone, renamed zone,
+(`TEMP_STEP`, `TEMP_MIN`, `TEMP_MAX`), the timeout and the house mode
+values are defined in AcquaThermoNet (`climatezones.h`, `mqttparse.cpp`,
+`[REGULATION] sensor_timeout_s`, `[MODES]`). Any change on either side (new zone, renamed zone,
 different topic or field) must be agreed and made in both applications at
 the same time; a new zone also needs its relay configured in the
 controller. Full controller documentation: [`DOCUMENTATION.md`](DOCUMENTATION.md).

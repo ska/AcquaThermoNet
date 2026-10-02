@@ -5,7 +5,7 @@ It reads room temperatures from MQTT sensors, drives the zone valves through
 a Modbus RTU relay board and appears in Home Assistant as one climate entity
 per zone. Alarms and status also go to Telegram.
 
-This document describes version **2.2.2**. The same content, with rendered
+This document describes version **2.3.0**. The same content, with rendered
 diagrams, is in [`AcquaThermoNet.html`](AcquaThermoNet.html). Telegram
 setup: [`TELEGRAM.md`](TELEGRAM.md). Deployment package:
 [`../tools/package/README.md`](../tools/package/README.md).
@@ -58,6 +58,9 @@ Main features:
 - on/off control with hysteresis per zone, minimum cycle time against short
   cycling, safe OFF when a sensor goes silent;
 - setpoints from the panel (+/−) or Home Assistant, kept across restarts;
+- house mode from the RoomSense panel: windows open (8 °C for 30 min),
+  away (15 °C until normal) or boost (25 °C for 30 min), the own
+  setpoints restored afterwards (§7.7);
 - relay feedback: the board is read back every 10 s, a relay that does not
   follow the commands is resent and then flagged as a fault;
 - frost protection for zones without sensor data when it is cold outside;
@@ -291,16 +294,21 @@ discovery.
 
 ### 5.2 Topics
 
-`<zone>` is the zone name from `[ZONES] list` (letters, digits, `_`, `-`).
+`<zone>` is the zone name from `[ZONES] list` (letters, digits, `_`, `-`;
+`list` and `mode` are reserved).
 
 | Topic | Dir. | Payload | Retain | Notes |
 |---|---|---|---|---|
 | `AcquaThermoNet/status` | out | `online` / `offline` | yes | availability; `offline` also as LWT |
 | `homeassistant/climate/<zone>/config` | out | discovery JSON (5.3) | yes | at connect and when HA comes online |
-| `AcquaThermoNet/<zone>/state_temp` | out | setpoint, e.g. `20` or `20.5` | yes | after every setpoint command, also when clamped |
+| `AcquaThermoNet/<zone>/state_temp` | out | applied setpoint, e.g. `20` or `20.5` | yes | after every setpoint command, also when clamped; during a house mode the mode value (§7.7) |
 | `AcquaThermoNet/<zone>/state_mode` | out | `heat` / `off` | yes | heat demand of the zone |
 | `AcquaThermoNet/<zone>/set_temp` | in | number, e.g. `21.5` | – | rounded to 0.5, clamped to 5…25; from Home Assistant and the RoomSense panel |
 | `AcquaThermoNet/<zone>/set_mode` | in | `heat` / anything else = off | – | not advertised to HA, see §22 |
+| `AcquaThermoNet/mode/set` | in | `normal` / `window` / `away` / `boost` | – | house mode, from the RoomSense panel (§7.7) |
+| `AcquaThermoNet/mode/state` | out | `{"mode":"window","remaining_s":1740}` | yes | after every mode command, at every change, every minute while `window` or `boost` |
+| `AcquaThermoNet/weather` | out | weather JSON (5.3) | yes | at every new reading of the weather service (§11) |
+| `homeassistant/sensor/<unique_id>_outdoor_<field>/config` | out | discovery JSON (5.3) | yes | 5 outdoor sensors; empty (removed) with the weather disabled |
 | `RoomSense/apartment/<zone>/data` | in | sensor JSON (5.4) | – | also HA `curr_temp_t` |
 | `homeassistant/status` | in | `online` | – | HA restarted: republish discovery |
 
@@ -346,6 +354,32 @@ keys come out in alphabetical order):
 The mode shown in HA is the **heat demand** (`heat` while the zone asks for
 heat, `off` when satisfied): HA cannot switch it, there is no
 `mode_command_topic`.
+
+**Outdoor weather.** The reading of the weather service (§11), the same
+the frost protection uses, as five `sensor` entities of one device
+`AcquaThermoNet` (identifier `<unique_id>`):
+
+| Entity | `<field>` | Device class | Unit |
+|---|---|---|---|
+| Outdoor temperature | `temperature` | `temperature` | °C |
+| Outdoor humidity | `humidity` | `humidity` | % |
+| Outdoor pressure | `pressure` | `atmospheric_pressure` | hPa |
+| Outdoor wind speed | `wind_speed` | `wind_speed` | m/s |
+| Outdoor precipitation | `precipitation` | `precipitation` | mm (met.no: next hour) |
+
+All read `AcquaThermoNet/weather` (`val_tpl` `{{ value_json.<field> }}`,
+`stat_cla` `measurement`, `avty_t` the status topic) and show its fields
+as attributes (`json_attr_t`), among them `location` and `source`, the
+provider (attribution: met.no data are CC BY 4.0). `exp_aft` is
+`[FROST_PROTECTION] outdoor_max_age_min` (180 min): HA shows them
+unavailable when the frost protection counts the outdoor data as unknown.
+
+```json
+{"humidity":90,"location":"Oslo","precipitation":0,"pressure":1026,"source":"met.no","temperature":14.3,"wind_speed":1.8}
+```
+
+With the weather disabled (§11) the discovery topics are published empty,
+so HA removes the sensors.
 
 ### 5.4 Sensor payload (RoomSense gateway)
 
@@ -449,6 +483,10 @@ mosquitto_sub -h <broker> -u <user> -P <password> -v \
 # set a zone setpoint (what HA does)
 mosquitto_pub -h <broker> -u <user> -P <password> \
   -t AcquaThermoNet/salotto/set_temp -m 21.5
+
+# house mode, as the RoomSense panel does (normal, window, away)
+mosquitto_pub -h <broker> -u <user> -P <password> \
+  -t AcquaThermoNet/mode/set -m away
 
 # simulate a sensor
 mosquitto_pub -h <broker> -u <user> -P <password> \
@@ -623,6 +661,39 @@ effectively one.
 - Written to `state.ini` 5 s after the last change (several taps = one flash
   write) and at shutdown; `setting.ini` keeps only the initial value.
 - At start: `state.ini` value if present, otherwise `setting.ini`.
+- The regulation uses the **applied** setpoint (`ZoneData::target`): the
+  zone's own one, or the house mode value (§7.7).
+
+### 7.7 House mode
+
+Chosen on the RoomSense panel for the whole house (contract:
+`SENSOR_GATEWAY_INTERFACE.md` §8), held by `ZoneModel`:
+
+| Mode | Applied setpoint of every zone | Ends |
+|---|---|---|
+| `normal` | its own | — |
+| `window` | min(own, `window_temp` 8 °C) | after `window_min` (30), or `normal` |
+| `away` | min(own, `away_temp` 15 °C) | only with `normal` |
+| `boost` | max(own, `boost_temp` 25 °C) | after `boost_min` (30), or `normal` |
+
+- The own setpoints are never changed by a mode: `normal` simply applies
+  them again. `window` and `away` never raise a zone (one kept lower
+  stays at its own), `boost` never lowers one.
+- During a mode `state_temp` is the applied value; `set_temp`, the panel
+  +/− and HA change the own setpoint, applied when the mode ends.
+- A new mode replaces the current one (`boost` ends `away` and `window`,
+  `window` ends `boost`), except `window` while `away`: refused (logged).
+  A new `window` or `boost` restarts its time.
+- Kept in `state.ini` `[MODE] house`, with the end of `window` and
+  `boost` in `[MODE] until` (epoch; the panel has an RTC and NTP). After
+  a restart `away` goes on; `window` and `boost` resume with the time
+  left, or end (setpoints restored) if it is over, if no end was saved
+  (clock not set when the mode began) or if the clock is not set yet
+  (year before 2024, as the valve exercise). The time left is never more
+  than `window_min` / `boost_min` (clock set back meanwhile).
+- The panel cards show `Window 8.0°` / `Away 15.0°` / `Boost 25.0°`
+  instead of `Set …`; Telegram `/status` shows the mode (and the time
+  left of window and boost).
 
 ---
 
@@ -692,7 +763,7 @@ Each card, top to bottom:
 | temperature | last reading, `--.-°` before the first |
 | Hum / Batt | humidity and battery of the sensor |
 | status line | the most important condition (below); red with red border for alarms |
-| Set | setpoint |
+| Set | setpoint (`Window` / `Away` and the applied value during a house mode, §7.7) |
 | − / + | setpoint −/+ 0.5 °C |
 
 Status line, by priority:
@@ -719,6 +790,9 @@ Status bar, two rows of fields with the `|` separators aligned in columns:
   for interfaces without one, e.g. a VPN). Refreshed when the broker
   connection changes and every 30 s (DHCP, cable, Wi-Fi).
 
+At the right end, the local date (`dd/MM/yyyy`, first row) and time
+(`HH:mm`, second row) of the device clock.
+
 Cards refresh every 5 s (ages and countdowns) and on every change. On the
 device the window is full screen, frameless and on top; style sheet
 `qss/default.qss`, designed for 800×480 with 5 zones.
@@ -735,10 +809,13 @@ device the window is full screen, frameless and on top; style sheet
 met.no terms of service are followed: `User-Agent: AcquaThermoNet/<version> <contact>`,
 no request before the `Expires` of the previous answer, `If-Modified-Since`
 (a `304` keeps the current data), coordinates with 4 decimals. Polled every
-`poll_s` (min 60 s).
+`poll_s` (min 60 s). A failed request (no DNS or network yet after a boot,
+no answer in 30 s, answer not understood) is retried after 30, 60, 120 s
+... up to `poll_s`; `Weather OK again after N failed request(s)` is logged
+when the data comes back.
 
 Used for: the status bar, the frost protection threshold (§8), Telegram
-`/status`. From met.no: first time step, `air_temperature`,
+`/status`, the outdoor sensors of Home Assistant (§5.3). From met.no: first time step, `air_temperature`,
 `relative_humidity`, `air_pressure_at_sea_level`, `wind_speed`, next hour
 `precipitation_amount`.
 
@@ -910,6 +987,18 @@ by the default. Restart the application after a change.
 | `min_cycle_s` | 180 | min time between two switches of a zone, 0 = off |
 | `sensor_timeout_s` | 900 | no data for this long: zone OFF / frost |
 
+### [MODES]
+
+House mode from the RoomSense panel (§7.7).
+
+| Key | Default | |
+|---|---|---|
+| `window_temp` | 8 | °C, 5…25: windows open, every zone at min(own, window_temp) |
+| `window_min` | 30 | 1…1440: then back to normal |
+| `away_temp` | 15 | °C, 5…25: away, min(own, away_temp) until normal |
+| `boost_temp` | 25 | °C, 5…25: boost, every zone at max(own, boost_temp) |
+| `boost_min` | 30 | 1…1440: then back to normal |
+
 ### [FROST_PROTECTION]
 
 | Key | Default | |
@@ -1023,6 +1112,8 @@ name=Casa
 | `[MQTT] unique_id` | generated id, kept so HA entities survive MAC changes |
 | `[ZONES] <zone>\setpoint` | last setpoint, overrides `setting.ini` |
 | `[RELAYS] <n>\last_on` | epoch of the last activation (valve exercise) |
+| `[MODE] house` | house mode: `normal`, `window`, `away`, `boost` (§7.7) |
+| `[MODE] until` | end of `window` / `boost`, epoch: resumed after a restart |
 | `[APP] clean_exit` | `false` while running |
 
 Do not deploy `state.ini`; delete it to go back to the `setting.ini`
@@ -1129,12 +1220,12 @@ generated `version.h`):
 
 | Build | Version |
 |---|---|
-| exactly at tag `v2.2.2` | `2.2.2` |
-| commits after the tag | `2.2.2-<short hash>` |
+| exactly at tag `v2.3.0` | `2.3.0` |
+| commits after the tag | `2.3.0-<short hash>` |
 | no git / no tag | `0.0.0` |
 
-Banner: `AcquaThermoNet v2.2.2 (git 1a2b3c4, built 2026-09-30 06:48:12 UTC)`
-(`-dirty` with uncommitted changes). Release: `git tag -a v2.2.2 -m v2.2.2`,
+Banner: `AcquaThermoNet v2.3.0 (git 1a2b3c4, built 2026-10-02 09:30:00 UTC)`
+(`-dirty` with uncommitted changes). Release: `git tag -a v2.3.0 -m v2.3.0`,
 then rerun qmake.
 
 ### 18.5 OpenSSL on the desktop
@@ -1193,7 +1284,7 @@ QtTest, no hardware or broker needed, 12 suites (~95 test functions):
 | Suite | Covers |
 |---|---|
 | `tst_config` | ini parsing, defaults, invalid values, state.ini |
-| `tst_zonemodel` | setpoint rounding/clamping, debounced save, signals |
+| `tst_zonemodel` | setpoint rounding/clamping, debounced save, signals, house modes |
 | `tst_regulation` | hysteresis, min cycle, sensor timeout, relay feedback, shutdown |
 | `tst_frost` | frost conditions and cycle |
 | `tst_exercise` | valve exercise schedule and sequence |
@@ -1249,7 +1340,7 @@ Needs an ini with at least 5 zones (the image in §10).
 | `MQTT client error: …` | broker address/credentials; see `MQTT TLS error:` lines for TLS |
 | `MQTT TLS configuration invalid: not connecting` | unreadable `ca_file`/`cert_file`/`key_file` |
 | `SSL handshake failed` (desktop) | OpenSSL 1.1 not preloaded, see §18.5 |
-| `Weather request failed` | no internet / DNS; frost protection uses `outdoor_unknown_protect` |
+| `Weather request failed: …, retry in N s` | no internet / DNS (`Host … not found`: check the DNS servers of the panel); frost protection uses `outdoor_unknown_protect` |
 | `Telegram message from a chat not allowed, ignored: chat id N` | add N to `allowed_chats` |
 | `Relays OFF not confirmed on exit` | board unreachable during shutdown |
 | `Err open /dev/watchdog, watchdog disabled` | normal on the desktop; on the device check root |
@@ -1272,6 +1363,38 @@ Needs an ini with at least 5 zones (the image in §10).
   model string is fixed (`AcquaThermoNet Ver 0.1`).
 - UI, log and Telegram texts are English only; `tr()` translation planned.
 - To verify on the real device: CA certificates for TLS/HTTPS, JMLauncher
-  handling of versions like `2.2.2-<hash>`, `background` flag, serial port
+  handling of versions like `2.3.0-<hash>`, `background` flag, serial port
   reopen after `kill -9`.
 - Qt 6 port postponed.
+
+### Planned
+
+**2.4.0: chrono thermostat, per zone.**
+
+- Two profiles per zone, weekday and holiday, up to 8 `HH:MM=temp` slots
+  each, in `setting.ini`:
+
+  ```ini
+  [CHRONO]
+  holiday_days=saturday, sunday
+  salotto\enabled=true
+  salotto\weekday=06:30=20.5, 08:00=18, 17:00=20.5, 22:30=17
+  salotto\holiday=08:00=20.5, 23:00=17
+  ```
+
+  An empty holiday profile uses the weekday one; before the first slot of
+  the day the last slot of the previous day holds.
+- The chrono writes the zone's own setpoint only when a new slot begins: a
+  manual change (panel, HA, RoomSense) lasts until the next slot.
+- `window`, `boost`: a slot change waits for the end of the mode; at the
+  end the chrono value applies only if a new slot began meanwhile,
+  otherwise the previous setpoint stays.
+- `away`: chrono suspended; at the end the current slot applies at once.
+- Restart: the last manual setpoint and its time (`state.ini`
+  `<zone>\setpoint_at`) stay unless a slot began after it. Values set by
+  the chrono are not written to flash.
+- Zone card: next change (e.g. `22:30 → 17.0°`), `chrono paused` while
+  away.
+
+Later steps: chrono editor in the GUI and from Home Assistant, then from
+the RoomSense panel (new interface section).

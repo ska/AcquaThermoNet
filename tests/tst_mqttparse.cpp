@@ -1,5 +1,8 @@
 #include <QTest>
 #include "mqttparse.h"
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 class TstMqttParse : public QObject
 {
@@ -87,6 +90,59 @@ private slots:
         QVERIFY(!MqttParse::sensorJson(payload, d, &error));
         QVERIFY(!error.isEmpty());
         QCOMPARE(d.temp, 19.0);     /* untouched */
+    }
+
+    void weatherState()
+    {
+        weather_t w;
+        w.comune = "Home";
+        w.temp = 12.3;
+        w.hum = 70;
+        w.press = 1015;
+        w.ws = 3.1;
+        w.rain = 0.2;
+        const QJsonObject o = QJsonDocument::fromJson(MqttParse::weatherState(w, "met.no")).object();
+        QCOMPARE(o["location"].toString(), QString("Home"));
+        QCOMPARE(o["source"].toString(), QString("met.no"));
+        QCOMPARE(o["temperature"].toDouble(), 12.3);
+        QCOMPARE(o["humidity"].toInt(), 70);
+        QCOMPARE(o["pressure"].toInt(), 1015);
+        QCOMPARE(o["wind_speed"].toDouble(), 3.1);
+        QCOMPARE(o["precipitation"].toDouble(), 0.2);
+    }
+
+    void weatherDiscovery()
+    {
+        const QVector<MqttParse::Message> msgs = MqttParse::weatherDiscovery("atn1", true, 10800);
+        QCOMPARE(msgs.size(), 5);
+        QStringList keys;
+        for(const MqttParse::Message &m : msgs)
+        {
+            const QJsonObject p = QJsonDocument::fromJson(m.payload).object();
+            const QString key = p["val_tpl"].toString().section('.', 1).section(' ', 0, 0);
+            keys << key;
+            QCOMPARE(m.topic, "homeassistant/sensor/atn1_outdoor_" + key + "/config");
+            QCOMPARE(p["uniq_id"].toString(), "atn1_outdoor_" + key);
+            QCOMPARE(p["stat_t"].toString(), QString("AcquaThermoNet/weather"));
+            QCOMPARE(p["json_attr_t"].toString(), QString("AcquaThermoNet/weather"));
+            QCOMPARE(p["avty_t"].toString(), QString("AcquaThermoNet/status"));
+            QCOMPARE(p["exp_aft"].toInt(), 10800);
+            QCOMPARE(p["stat_cla"].toString(), QString("measurement"));
+            QCOMPARE(p["device"].toObject()["identifiers"].toArray().first().toString(), QString("atn1"));
+        }
+        QCOMPARE(keys, QStringList({ "temperature", "humidity", "pressure", "wind_speed", "precipitation" }));
+        const QJsonObject t = QJsonDocument::fromJson(msgs.first().payload).object();
+        QCOMPARE(t["dev_cla"].toString(), QString("temperature"));
+        QCOMPARE(t["unit_of_meas"].toString(), QString::fromUtf8("°C"));
+
+        /* disabled: same topics, empty payloads (entities removed) */
+        const QVector<MqttParse::Message> off = MqttParse::weatherDiscovery("atn1", false, 10800);
+        QCOMPARE(off.size(), 5);
+        for(int i = 0; i < off.size(); i++)
+        {
+            QCOMPARE(off[i].topic, msgs[i].topic);
+            QVERIFY(off[i].payload.isEmpty());
+        }
     }
 };
 

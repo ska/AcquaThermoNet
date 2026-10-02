@@ -347,7 +347,7 @@ void Termoregolazione::evaluateZone(int zone)
 
     /* A real switch waits for the min cycle; resending the same state does not */
     bool deferred = false;
-    if( (t.temp < (t.setPoint-TEMP_HYST)) && ((t.heat != true) || m_Forcerefresh))
+    if( (t.temp < (t.target-TEMP_HYST)) && ((t.heat != true) || m_Forcerefresh))
     {
         if( t.heat || minCycleElapsed(zone, true) )
             driveZone(zone, true, "regulation");
@@ -355,7 +355,7 @@ void Termoregolazione::evaluateZone(int zone)
             deferred = true;
     }
     else
-    if( (t.temp > t.setPoint) && ((t.heat == true) || m_Forcerefresh))
+    if( (t.temp > t.target) && ((t.heat == true) || m_Forcerefresh))
     {
         if( !t.heat || minCycleElapsed(zone, false) )
             driveZone(zone, false, "regulation");

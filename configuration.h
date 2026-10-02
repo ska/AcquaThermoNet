@@ -19,6 +19,8 @@
  *   [MQTT]   unique_id
  *   [ZONES]  <zone>\setpoint    (overrides the initial one of setting.ini)
  *   [RELAYS] <n>\last_on       (epoch secs of the last activation, valve exercise)
+ *   [MODE]   house             (normal, window, away, boost: house mode, interface §8)
+ *            until             (epoch secs: end of window or boost, resumed after a restart)
  *   [APP]    clean_exit        (false while running: tells a crash at next start)
  *
  * setting.ini format:
@@ -45,6 +47,13 @@
  *   [REGULATION]
  *   min_cycle_s=180
  *   sensor_timeout_s=900
+ *
+ *   [MODES]             (house mode from the RoomSense panel, interface §8)
+ *   window_temp=8       (windows open: every zone at min(own, window_temp))
+ *   window_min=30       (then back to normal)
+ *   away_temp=15        (away: min(own, away_temp) until normal)
+ *   boost_temp=25       (boost: every zone at max(own, boost_temp))
+ *   boost_min=30        (then back to normal)
  *
  *   [FROST_PROTECTION]  (zones without sensor data, outdoor below outdoor_below)
  *   enabled=true
@@ -166,6 +175,13 @@ public:
     void loadLog(QString &path, qint64 &maxBytes, int &files) const;
     void loadRelayLog(QString &path, int &keepMonths) const;
     TelegramConfig loadTelegram() const;
+    ModeConfig loadModes() const;
+
+    /* state.ini [MODE] house: "normal", "window", "away", "boost" (empty:
+     * never set); until: end of window or boost, epoch secs, 0 = none */
+    QString loadHouseMode() const;
+    qint64 loadHouseModeUntil() const;
+    void saveHouseMode(const QString &mode, qint64 untilS = 0);
 
     /* state.ini [APP] clean_exit: -1 never started, 0 unexpected stop, 1 clean */
     int  lastExitState() const;

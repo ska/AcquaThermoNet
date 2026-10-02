@@ -41,7 +41,8 @@ Options:
                       soname symlinks. Default: none
   --version <ver>     Package version (default: the latest git tag vX.Y.Z,
                       plus the commit short hash when built after it, e.g.
-                      2.0.0-0566e34; same as the application, version.pri)
+                      2.0.0-0566e34; 0.0.0 without a tag or outside git;
+                      same as the application, version.pri)
   --out-dir <dir>     Where to write the zip (default: <bin-dir>/../dist)
   --no-root           executeAsRoot=false (default true: watchdog, serial port)
   --background        background=true (default false: full screen HMI)
@@ -84,15 +85,14 @@ if [ ! -f "$binary" ]; then
 fi
 
 if [ -z "$version" ]; then
-    # Same source as the application version (version.pri)
-    version="$(git -C "$repo_root" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')"
-    if [ -z "$version" ]; then
-        echo "error: could not determine version from the latest git tag; pass --version" >&2
-        exit 1
-    fi
+    # Same source as the application version (version.pri): the latest
+    # tag vX.Y.Z, 0.0.0 with no tag reachable or outside a git checkout
+    version="$(git -C "$repo_root" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
+    [ -z "$version" ] && version="0.0.0"
     # Commits after the tag: short hash appended, e.g. 2.0.0-0566e34
-    if ! git -C "$repo_root" describe --tags --exact-match HEAD >/dev/null 2>&1; then
-        version="$version-$(git -C "$repo_root" rev-parse --short HEAD)"
+    hash="$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || true)"
+    if [ -n "$hash" ] && ! git -C "$repo_root" describe --tags --exact-match HEAD >/dev/null 2>&1; then
+        version="$version-$hash"
     fi
 fi
 

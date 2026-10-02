@@ -43,6 +43,7 @@ private:
     static const int BAR_FIELDS = 4;
     QVector<QLabel*>        m_barFields[2];
     QVector<QLabel*>        m_barSeparators[2];     /* before field 1.. */
+    QLabel                  *m_barClock[2];         /* right: date, time */
     QString                 m_mqttStatus;
     QString                 m_weatherInfo;
     bool                    m_serialOpen;
@@ -51,6 +52,7 @@ private:
     QVector<ZoneCard*>      m_cards;
 
     void updateStatusbar();
+    void updateClock();
     void setBarRow(int row, const QStringList &fields);
     static QString ago(qint64 ms);
     static QString in(qint64 ms);

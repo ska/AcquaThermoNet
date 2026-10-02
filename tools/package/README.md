@@ -17,8 +17,8 @@ libraries and `libudev.so.1` (used by QtSerialPort, present on the panel).
 build (Arm32, Arm64), so building in Qt Creator or with `make` is enough:
 
 ```
-<build dir>/dist/AcquaThermoNet_Package_Arm32_2.2.2.zip
-<build dir>/dist/AcquaThermoNet_Arm32_2.2.2.debug
+<build dir>/dist/AcquaThermoNet_Package_Arm32_2.3.0.zip
+<build dir>/dist/AcquaThermoNet_Arm32_2.3.0.debug
 ```
 
 - desktop builds: only with `CONFIG+=package` (qmake argument);
@@ -29,15 +29,16 @@ Debug information: the binary in the zip is **stripped** (the SDK compiles
 with `-g` also in release: 17 MB with, about 0.5 MB without). The full
 binary is kept next to the zip as `AcquaThermoNet_<arch>_<version>.debug`:
 keep it with the release to read a core dump of the device
-(`gdb AcquaThermoNet_Arm32_2.2.2.debug core`; `start.sh` enables core
+(`gdb AcquaThermoNet_Arm32_2.3.0.debug core`; `start.sh` enables core
 dumps). The strip is the one of the build toolchain (`$(STRIP)` of the
 Makefile, searched next to the compiler when the SDK environment is not
 loaded, as in Qt Creator); a missing or wrong strip stops the packaging
 with an error. `--no-strip` packages the full binary.
 
 Version: the latest git tag `vX.Y.Z`, the same as the application
-(`version.pri`; `--version` to override); built after the tag, the commit
-short hash is appended (`2.0.0-0566e34`). A release:
+(`version.pri`; `--version` to override; `0.0.0` before the first tag or
+outside a git checkout); built after the tag, the commit short hash is
+appended (`2.0.0-0566e34`). A release:
 
 ```
 git tag -a v2.0.0 -m v2.0.0
@@ -91,6 +92,9 @@ deploy/
   so this is what keeps the device configuration, setpoints, MQTT
   `unique_id`, relay history and relay activity log across an update.
 - **update.sh**: nothing to do, `updateFinished` notification.
+
+The dbus notifications go to the launcher service, whose name (`*.JMLauncher`)
+the hooks look up on the system bus at run time (`ListNames`).
 
 On a fresh install there is no `setting.ini`: the application creates it
 from `setting.default.ini` at the first start. Edit it for the device

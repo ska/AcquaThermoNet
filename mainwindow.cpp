@@ -5,6 +5,7 @@
 #include "netinfo.h"
 #include <QFile>
 #include <QTimer>
+#include <QDateTime>
 #include <QGridLayout>
 
 MainWindow::MainWindow(ZoneModel *zones, Mqtt *mq, QWidget *parent)
@@ -28,7 +29,7 @@ MainWindow::MainWindow(ZoneModel *zones, Mqtt *mq, QWidget *parent)
      * would hide the widgets. */
     QWidget *bottom = new QWidget(this);
     QGridLayout *grid = new QGridLayout(bottom);
-    grid->setContentsMargins(4, 0, 0, 0);
+    grid->setContentsMargins(4, 0, 10, 0);
     grid->setHorizontalSpacing(10);
     grid->setVerticalSpacing(0);
     for(int row = 0; row < 2; row++)
@@ -52,6 +53,14 @@ MainWindow::MainWindow(ZoneModel *zones, Mqtt *mq, QWidget *parent)
     for(int row = 0; row < 2; row++)
         m_barFields[row].last()->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     grid->setColumnStretch(2*BAR_FIELDS - 2, 1);
+    /* wall clock at the right end: date on the status row, time below */
+    for(int row = 0; row < 2; row++)
+    {
+        m_barClock[row] = new QLabel(bottom);
+        m_barClock[row]->setObjectName(row == 0 ? "barStatus" : "barNetwork");
+        m_barClock[row]->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        grid->addWidget(m_barClock[row], row, 2*BAR_FIELDS - 1);
+    }
     ui->statusbar->addWidget(bottom, 1);
 
     m_mqttStatus    = "MQTT: disconnected";
@@ -60,6 +69,7 @@ MainWindow::MainWindow(ZoneModel *zones, Mqtt *mq, QWidget *parent)
 
     connect( mq,        &Mqtt::clientStateChanged,  this, &MainWindow::clientStateChanged );
     connect( m_zones,   &ZoneModel::zoneChanged,    this, &MainWindow::zoneDataIsChanged );
+    connect( m_zones,   &ZoneModel::houseModeChanged, this, &MainWindow::refreshAllZones );
 
     /* One card per configured zone */
     for(int zone=0; zone<m_zones->count(); zone++)
@@ -83,6 +93,12 @@ MainWindow::MainWindow(ZoneModel *zones, Mqtt *mq, QWidget *parent)
     connect(networkTimer, &QTimer::timeout, this, &MainWindow::updateNetworkInfo);
     networkTimer->start(30*1000);
     updateNetworkInfo();
+
+    /* every second, so that the minute changes on time */
+    QTimer *clockTimer = new QTimer(this);
+    connect(clockTimer, &QTimer::timeout, this, &MainWindow::updateClock);
+    clockTimer->start(1000);
+    updateClock();
 
     updateStatusbar();
 }
@@ -172,6 +188,17 @@ void MainWindow::updateStatusbar()
 }
 
 /**
+ * @brief MainWindow::updateClock
+ * Local wall clock (NTP/RTC of the device), not MonoClock
+ */
+void MainWindow::updateClock()
+{
+    const QDateTime now = QDateTime::currentDateTime();
+    m_barClock[0]->setText(now.toString("dd/MM/yyyy"));
+    m_barClock[1]->setText(now.toString("HH:mm"));
+}
+
+/**
  * @brief MainWindow::setBarRow
  * Fields beyond the given ones (and their separator) are hidden
  */
@@ -231,7 +258,9 @@ void MainWindow::zoneDataIsChanged(int zone)
     const bool hasData = t.lastSeenMs != 0;
     card->setTemperature(hasData ? QString("%1°").arg(t.temp, 0, 'f', 1) : "--.-°");
     card->setInfo(hasData ? QString("Hum %1%   Batt %2%").arg(t.humidity).arg(t.battery) : "");
-    card->setSetPoint(QString("Set %1°").arg(t.setPoint, 0, 'f', 1));
+    /* House mode (from RoomSense): the applied value; +/- change the own one */
+    static const char *setLabel[] = { "Set", "Window", "Away", "Boost" };
+    card->setSetPoint(QString("%1 %2°").arg(setLabel[m_zones->houseMode()]).arg(t.target, 0, 'f', 1));
     card->setHeat(t.heat);
     card->setRelay(t.relay > 0 ? t.relayState : -1);
 

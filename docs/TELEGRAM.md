@@ -50,7 +50,7 @@ when Telegram is reachable again.
 
 | | |
 |---|---|
-| `/status` | all zones (temperature, setpoint, heating, relay), MQTT, Modbus, outdoor, active alarms |
+| `/status` | all zones (temperature, applied setpoint, heating, relay), MQTT, Modbus, outdoor, house mode, active alarms |
 | `/zone <name>` | one zone: last reading and its age, battery, relay, pending switch, alarms, heating time today |
 | `/today` | relay ON time per zone since midnight (from the relay log) |
 | `/week` | relay ON time per zone in the last 7 days |

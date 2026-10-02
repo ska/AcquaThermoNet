@@ -320,6 +320,63 @@ TelegramConfig Configuration::loadTelegram() const
 }
 
 /**
+ * @brief Configuration::loadModes
+ * [MODES] window_temp, away_temp, boost_temp (TEMP_MIN..TEMP_MAX, rounded
+ * to TEMP_STEP), window_min, boost_min (1..1440)
+ */
+ModeConfig Configuration::loadModes() const
+{
+    QSettings settings(m_path, QSettings::IniFormat);
+    settings.beginGroup("MODES");
+    ModeConfig mc;
+    bool ok;
+
+    auto temp = [&settings, &ok](const char *key, double &out) {
+        const double v = settings.value(key, out).toDouble(&ok);
+        if(ok && v >= TEMP_MIN && v <= TEMP_MAX)
+            out = qRound(v / TEMP_STEP) * TEMP_STEP;
+        else
+            qCWarning(lcConfig) << "Invalid MODES/" << key << ", using" << out;
+    };
+    temp("window_temp", mc.windowTemp);
+    temp("away_temp", mc.awayTemp);
+    temp("boost_temp", mc.boostTemp);
+
+    auto minutes = [&settings, &ok](const char *key, int &outS) {
+        const int min = settings.value(key, outS / 60).toInt(&ok);
+        if(ok && min >= 1 && min <= 1440)
+            outS = min * 60;
+        else
+            qCWarning(lcConfig) << "Invalid MODES/" << key << ", using" << outS / 60;
+    };
+    minutes("window_min", mc.windowS);
+    minutes("boost_min", mc.boostS);
+    settings.endGroup();
+    return mc;
+}
+
+QString Configuration::loadHouseMode() const
+{
+    return QSettings(m_statePath, QSettings::IniFormat).value("MODE/house").toString();
+}
+
+qint64 Configuration::loadHouseModeUntil() const
+{
+    return QSettings(m_statePath, QSettings::IniFormat).value("MODE/until", 0).toLongLong();
+}
+
+void Configuration::saveHouseMode(const QString &mode, qint64 untilS)
+{
+    QSettings state(m_statePath, QSettings::IniFormat);
+    state.setValue("MODE/house", mode);
+    if(untilS > 0)
+        state.setValue("MODE/until", untilS);
+    else
+        state.remove("MODE/until");
+    syncToDisk(state);
+}
+
+/**
  * @brief Configuration::lastExitState
  * @return -1 first start, 0 unexpected stop (crash, power loss, watchdog), 1 clean
  */
@@ -379,7 +436,8 @@ QString Configuration::uniqueId(const QString &fallback)
 bool Configuration::validZoneName(const QString &name)
 {
     static const QRegularExpression re("^[A-Za-z0-9_-]+$");
-    return re.match(name).hasMatch() && name != "list";
+    /* "mode": AcquaThermoNet/mode/... are the house mode topics */
+    return re.match(name).hasMatch() && name != "list" && name != "mode";
 }
 
 /**

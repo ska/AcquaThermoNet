@@ -258,6 +258,12 @@ QString TelegramNotifier::statusText() const
                                                                                      : (m_modbusOffline ? "OFFLINE" : "online"));
     if(m_weatherKnown)
         sys += QString(" | outdoor %1 %2°C").arg(m_weather.comune).arg(m_weather.temp, 0, 'f', 1);
+    if(m_zones->houseMode() == ZoneModel::ModeWindow)
+        sys += QString(" | windows open, %1 left").arg(duration(m_zones->remainingS()));
+    else if(m_zones->houseMode() == ZoneModel::ModeBoost)
+        sys += QString(" | boost, %1 left").arg(duration(m_zones->remainingS()));
+    else if(m_zones->houseMode() == ZoneModel::ModeAway)
+        sys += " | away";
     l << sys << "";
 
     for(int zone=0; zone<m_zones->count(); zone++)
@@ -265,7 +271,7 @@ QString TelegramNotifier::statusText() const
         const ZoneData &z = m_zones->zone(zone);
         QString line = QString("%1: %2 set %3").arg(zoneName(zone),
                                                     z.lastSeenMs ? QString("%1°").arg(z.temp, 0, 'f', 1) : QString("--.-°"),
-                                                    QString("%1°").arg(z.setPoint, 0, 'f', 1));
+                                                    QString("%1°").arg(z.target, 0, 'f', 1));
         line += z.heat ? " - heating" : " - idle";
         if(z.relay > 0)
             line += z.relayState == 1 ? ", relay ON" : (z.relayState == 0 ? ", relay OFF" : ", relay ?");
@@ -292,7 +298,11 @@ QString TelegramNotifier::zoneText(int zone) const
     }
     else
         l << "No sensor data since the start";
-    l << QString("Setpoint %1°C, %2").arg(z.setPoint, 0, 'f', 1).arg(z.heat ? "heating" : "idle");
+    if(m_zones->houseMode() == ZoneModel::ModeNormal)
+        l << QString("Setpoint %1°C, %2").arg(z.setPoint, 0, 'f', 1).arg(z.heat ? "heating" : "idle");
+    else
+        l << QString("Setpoint %1°C (%2, own %3°C), %4").arg(z.target, 0, 'f', 1).arg(ZoneModel::modeName(m_zones->houseMode()))
+                                                         .arg(z.setPoint, 0, 'f', 1).arg(z.heat ? "heating" : "idle");
     if(z.relay > 0)
         l << QString("Relay %1: %2").arg(z.relay).arg(z.relayState == 1 ? "ON" : (z.relayState == 0 ? "OFF" : "unknown"));
     else

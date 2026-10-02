@@ -81,6 +81,13 @@ Mqtt::Mqtt(const mqtt_brk_t &broker, const QString &uniqueId, ZoneModel *zones, 
     /* Local state is the source of truth: publish what changes */
     connect(m_zones, &ZoneModel::setPointChanged,   this, &Mqtt::publishSetPoint);
     connect(m_zones, &ZoneModel::heatChanged,       this, &Mqtt::publishMode);
+    connect(m_zones, &ZoneModel::houseModeChanged,  this, &Mqtt::publishHouseMode);
+    m_houseModeTimer = new QTimer(this);
+    connect(m_houseModeTimer, &QTimer::timeout, this, [this] {
+        if( m_zones->remainingS() > 0 )
+            publishHouseMode();
+    });
+    m_houseModeTimer->start(60 * 1000);
 
     connectToBroker();
 }
@@ -376,6 +383,19 @@ void Mqtt::messageReceivedSlot(const QByteArray &message, const QMqttTopicName &
         return;
     }
 
+    //AcquaThermoNet/mode/set: state published after every command,
+    //also when unchanged or refused
+    if( topicName == MODE_SET_TOPIC )
+    {
+        ZoneModel::HouseMode mode;
+        if( !ZoneModel::parseMode(QString::fromUtf8(message).trimmed(), mode) )
+            qCWarning(lcMqtt) << "Invalid house mode:" << message;
+        else
+            m_zones->setHouseMode(mode);
+        publishHouseMode();
+        return;
+    }
+
     //AcquaThermoNet/ZONA/set_temp
     if( MqttParse::matchZoneTopic(topicName, BASE_TOPIC, TAIL_SET_TEMP, zoneName) )
     {
@@ -484,17 +504,58 @@ void Mqtt::MqttHomeAssistantDiscovery()
         publishMode(zone);
         publishSetPoint(zone);
     }
+    publishHouseMode();
+
+    for(const MqttParse::Message &m : MqttParse::weatherDiscovery(m_uniqueId, m_weatherEnabled, m_weatherExpireS))
+        m_client->publish(QMqttTopicName(m.topic), m.payload, 1, true);
+    publishWeather();
+}
+
+/**
+ * @brief Mqtt::setWeatherConfig
+ * @param enabled   weather polled: sensors published, else removed
+ * @param expireS   HA shows them unavailable after this time without data
+ * @param source    provider, in the payload (attribution)
+ */
+void Mqtt::setWeatherConfig(bool enabled, int expireS, const QString &source)
+{
+    m_weatherEnabled = enabled;
+    m_weatherExpireS = expireS;
+    m_weatherSource  = source;
+}
+
+/**
+ * @brief Mqtt::setWeather
+ * New outdoor data from the weather service
+ */
+void Mqtt::setWeather(weather_t info)
+{
+    m_weather = info;
+    m_weatherKnown = true;
+    publishWeather();
+}
+
+/**
+ * @brief Mqtt::publishWeather
+ * WEATHER_TOPIC (retained), the outdoor sensors of HA
+ */
+void Mqtt::publishWeather()
+{
+    if( !m_weatherEnabled || !m_weatherKnown || m_client->state() != QMqttClient::Connected )
+        return;
+    m_client->publish(QMqttTopicName(WEATHER_TOPIC), MqttParse::weatherState(m_weather, m_weatherSource), 1, true);
 }
 
 /**
  * @brief Mqtt::publishSetPoint
- * Publish current setpoint on state_temp (retained)
+ * Publish the applied setpoint on state_temp (retained): during a house
+ * mode the mode value, not the zone's own one
  * @param zone
  */
 void Mqtt::publishSetPoint(int zone)
 {
     QMqttTopicName tn(zoneTopic(zone) + "/" TAIL_STATE_TEMP);
-    m_client->publish(tn, QString::number(m_zones->zone(zone).setPoint).toUtf8(), 1, true);
+    m_client->publish(tn, QString::number(m_zones->zone(zone).target).toUtf8(), 1, true);
 }
 
 /**
@@ -506,4 +567,22 @@ void Mqtt::publishMode(int zone)
 {
     QMqttTopicName tn(zoneTopic(zone) + "/" TAIL_STATE_MODE);
     m_client->publish(tn, m_zones->zone(zone).heat ? "heat" : "off", 1, true);
+}
+
+/**
+ * @brief Mqtt::publishHouseMode
+ * mode/state (retained): {"mode":"window","remaining_s":1740}; also every
+ * minute while the window or boost mode runs
+ */
+void Mqtt::publishHouseMode()
+{
+    const ZoneModel::HouseMode mode = m_zones->houseMode();
+    if( m_client->state() != QMqttClient::Connected )
+        return;
+
+    QJsonObject payload;
+    payload.insert("mode", ZoneModel::modeName(mode));
+    if( mode == ZoneModel::ModeWindow || mode == ZoneModel::ModeBoost )
+        payload.insert("remaining_s", m_zones->remainingS());
+    m_client->publish(QMqttTopicName(MODE_STATE_TOPIC), QJsonDocument(payload).toJson(QJsonDocument::Compact), 1, true);
 }

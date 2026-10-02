@@ -92,6 +92,22 @@ private slots:
         QCOMPARE(writes(), QList<RelayWrite>() << RelayWrite(1, true));
     }
 
+    void houseModeRegulates()
+    {
+        start(0);
+        sensor(0, 19.0);
+        QCOMPARE(writes(), QList<RelayWrite>() << RelayWrite(1, true));
+        m_zones->setHouseMode(ZoneModel::ModeAway);     /* 15: no more demand */
+        QCOMPARE(writes().last(), RelayWrite(1, false));
+        m_zones->setHouseMode(ZoneModel::ModeNormal);   /* back to 20 */
+        QCOMPARE(writes().last(), RelayWrite(1, true));
+
+        sensor(0, 21.0);                                /* above 20: OFF */
+        QCOMPARE(writes().last(), RelayWrite(1, false));
+        m_zones->setHouseMode(ZoneModel::ModeBoost);    /* 25: heat */
+        QCOMPARE(writes().last(), RelayWrite(1, true));
+    }
+
     void zoneWithoutRelay()
     {
         start(0);

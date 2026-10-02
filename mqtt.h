@@ -31,8 +31,13 @@ public:
     /* Local address of the broker connection, null when not connected */
     QHostAddress localAddress() const;
 
+    /* Outdoor weather for HA (sensors on WEATHER_TOPIC): call before the
+     * connection. Disabled: the sensors are removed from HA. */
+    void setWeatherConfig(bool enabled, int expireS, const QString &source);
+
 public slots:
     void forceReconnectToHost();
+    void setWeather(weather_t info);
 
 signals:
     void clientStateChanged( quint8 );
@@ -42,6 +47,8 @@ private slots:
     void messageReceivedSlot(const QByteArray &message, const QMqttTopicName &topic);
     void publishSetPoint(int zone);
     void publishMode(int zone);
+    void publishHouseMode();
+    void publishWeather();
 
 private:
     QMqttClient             *m_client;
@@ -56,6 +63,13 @@ private:
     QSslSocket              *m_tlsSocket;       /* nullptr: plain TCP */
     QTimer                  *m_tlsConnectTimer;
     QTimer                  *m_ReconnectTimer;
+    QTimer                  *m_houseModeTimer;  /* window countdown republished every minute */
+    /* Outdoor weather */
+    bool                    m_weatherEnabled = false;
+    int                     m_weatherExpireS = 0;
+    QString                 m_weatherSource;
+    weather_t               m_weather;
+    bool                    m_weatherKnown = false;
 
     void connectToBroker();
     void scheduleReconnect();

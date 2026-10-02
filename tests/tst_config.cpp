@@ -52,6 +52,57 @@ private slots:
         QCOMPARE(z[1].setPoint, double(TEMP_DEFAULT));
     }
 
+    void modeIsReserved()
+    {
+        QTemporaryDir dir;
+        Configuration conf(TestUtil::writeIni(dir, "[ZONES]\nlist=mode, a\n"));
+        const QVector<ZoneData> z = conf.loadZones();
+        QCOMPARE(z.size(), 1);
+        QCOMPARE(z[0].name, QString("a"));
+    }
+
+    void modes()
+    {
+        QTemporaryDir dir;
+        Configuration def(TestUtil::writeIni(dir, "[ZONES]\nlist=a\n"));
+        ModeConfig mc = def.loadModes();
+        QCOMPARE(mc.windowTemp, 8.0);
+        QCOMPARE(mc.windowS, 30 * 60);
+        QCOMPARE(mc.awayTemp, 15.0);
+        QCOMPARE(mc.boostTemp, 25.0);
+        QCOMPARE(mc.boostS, 30 * 60);
+
+        QTemporaryDir dir2;
+        Configuration conf(TestUtil::writeIni(dir2, "[MODES]\nwindow_temp=7.3\nwindow_min=45\naway_temp=16\n"
+                                                    "boost_temp=23\nboost_min=20\n"));
+        mc = conf.loadModes();
+        QCOMPARE(mc.windowTemp, 7.5);                   /* rounded to the step */
+        QCOMPARE(mc.windowS, 45 * 60);
+        QCOMPARE(mc.awayTemp, 16.0);
+        QCOMPARE(mc.boostTemp, 23.0);
+        QCOMPARE(mc.boostS, 20 * 60);
+
+        QTemporaryDir dir3;
+        Configuration bad(TestUtil::writeIni(dir3, "[MODES]\nwindow_temp=2\nwindow_min=0\naway_temp=x\n"
+                                                   "boost_temp=30\nboost_min=2000\n"));
+        mc = bad.loadModes();
+        QCOMPARE(mc.windowTemp, 8.0);
+        QCOMPARE(mc.windowS, 30 * 60);
+        QCOMPARE(mc.awayTemp, 15.0);
+        QCOMPARE(mc.boostTemp, 25.0);
+        QCOMPARE(mc.boostS, 30 * 60);
+
+        QCOMPARE(conf.loadHouseMode(), QString());
+        conf.saveHouseMode("away");
+        QCOMPARE(conf.loadHouseMode(), QString("away"));
+        QCOMPARE(conf.loadHouseModeUntil(), qint64(0));
+        conf.saveHouseMode("boost", 1790000000);
+        QCOMPARE(conf.loadHouseMode(), QString("boost"));
+        QCOMPARE(conf.loadHouseModeUntil(), qint64(1790000000));
+        conf.saveHouseMode("normal");                   /* until removed */
+        QCOMPARE(conf.loadHouseModeUntil(), qint64(0));
+    }
+
     void loadZonesEmpty()
     {
         QTemporaryDir dir;

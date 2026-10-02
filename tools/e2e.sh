@@ -88,6 +88,7 @@ sleep 0.5
 echo "--- startup"
 check "discovery for 2 zones"          broker.log "homeassistant/climate/camera/config"
 check "availability online"            broker.log "AcquaThermoNet/status online"
+check "weather disabled: HA sensors removed" broker.log "homeassistant/sensor/E2E_outdoor_temperature/config +(\[R\])?$"
 check "all relays OFF at startup"      sim.log    "#1 write relay 5 OFF"
 echo "--- regulation"
 check "15 < 17-0.5: relay 5 ON"        sim.log    "write relay 5 ON"

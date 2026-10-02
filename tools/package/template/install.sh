@@ -9,9 +9,11 @@
 # JMLauncher expects the showProgress/installFinished dbus notifications.
 
 cd "$(dirname "$0")"
+# D-Bus name of the panel launcher, looked up on the system bus
+launcher=$(dbus-send --system --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.ListNames 2>/dev/null | grep -o '"[^"]*\.JMLauncher"' | tr -d '"' | head -n 1)
 BACKUP=/tmp/acquathermonet-backup
 
-dbus-send --print-reply --system --dest=com.exor.JMLauncher '/' com.exor.JMLauncher.showProgress string:"AcquaThermoNet install" int32:-1
+dbus-send --print-reply --system --dest="$launcher" '/' "$launcher".showProgress string:"AcquaThermoNet install" int32:-1
 
 chmod +x deploy/AcquaThermoNet ./*.sh deploy/*.sh
 result=0
@@ -49,5 +51,5 @@ if [ -d "$BACKUP" ]; then
 fi
 sync
 
-dbus-send --print-reply --system --dest=com.exor.JMLauncher '/' com.exor.JMLauncher.installFinished int32:$result string:""
+dbus-send --print-reply --system --dest="$launcher" '/' "$launcher".installFinished int32:$result string:""
 exit 0

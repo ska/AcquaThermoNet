@@ -21,6 +21,7 @@ Weather::Weather(const WeatherConfig &config, QObject *parent)
     connect(m_manager, &QNetworkAccessManager::finished, this, &Weather::replyFinished);
 
     m_timer = new QTimer(this);
+    m_timer->setSingleShot(true);
     connect(m_timer, &QTimer::timeout, this, &Weather::request);
 }
 
@@ -35,12 +36,11 @@ void Weather::startPoll()
         return;
     }
     qCInfo(lcWeather) << "Weather from" << (m_config.provider == WeatherConfig::MetNo ? "api.met.no" : "wttr.in")
-                      << "every" << m_config.pollS << "s";
+                      << "every" << pollS() << "s";
     if(m_config.provider == WeatherConfig::MetNo && m_config.contact.isEmpty())
         qCWarning(lcWeather) << "met.no asks for a contact in the User-Agent: set WEATHER/contact";
 
     request();
-    m_timer->start(qMax(60, m_config.pollS) * 1000);
 }
 
 /**
@@ -60,6 +60,9 @@ QByteArray Weather::userAgent() const
  */
 void Weather::request()
 {
+    /* next poll; a failure brings it forward (failed()) */
+    m_timer->start(pollS() * 1000);
+
     QNetworkRequest req;
     req.setRawHeader("User-Agent", userAgent());
 
@@ -87,7 +90,39 @@ void Weather::request()
     {
         req.setUrl(QUrl("https://wttr.in/" + m_config.location + "?format=\"%l:+%t+%h+%w+%p+%P+%T\"&M"));
     }
-    m_manager->get(req);
+    QNetworkReply *reply = m_manager->get(req);
+    /* Qt 5.13 has no transfer timeout: a stalled request would never end */
+    QTimer::singleShot(REQUEST_TIMEOUT_MS, reply, [reply] {
+        if(reply->isRunning())
+        {
+            reply->setProperty("timedOut", true);
+            reply->abort();
+        }
+    });
+}
+
+/**
+ * @brief Weather::retryDelayS
+ * 30, 60, 120 ... s, never more than pollS
+ */
+int Weather::retryDelayS(int failures, int pollS)
+{
+    if(failures < 1)
+        return pollS;
+    const int shift = qMin(failures - 1, 16);
+    return int(qMin<qint64>(qint64(RETRY_FIRST_S) << shift, pollS));
+}
+
+/**
+ * @brief Weather::failed
+ * Logged and retried sooner than the poll
+ */
+void Weather::failed(const QString &reason)
+{
+    m_failures++;
+    const int delayS = retryDelayS(m_failures, pollS());
+    qCWarning(lcWeather).noquote() << QString("Weather request failed: %1, retry in %2 s").arg(reason).arg(delayS);
+    m_timer->start(delayS * 1000);
 }
 
 /**
@@ -190,12 +225,18 @@ void Weather::replyFinished(QNetworkReply *reply)
 
         /* Not modified: the data shown is still current */
         if(status == 304)
+        {
+            m_failures = 0;
             return;
+        }
     }
 
     if(reply->error() != QNetworkReply::NoError)
     {
-        qCWarning(lcWeather) << "Weather request failed:" << status << reply->errorString();
+        if(reply->property("timedOut").toBool())
+            failed(QString("no answer in %1 s").arg(REQUEST_TIMEOUT_MS / 1000));
+        else
+            failed(QString("%1 \"%2\"").arg(status).arg(reply->errorString()));
         return;
     }
 
@@ -206,9 +247,13 @@ void Weather::replyFinished(QNetworkReply *reply)
             : parseWttr(QString::fromUtf8(answer), info);
     if(ok)
     {
+        if(m_failures > 0)
+            qCInfo(lcWeather).noquote() << QString("Weather OK again after %1 failed request(s): %2 %3 C")
+                                           .arg(m_failures).arg(info.comune).arg(info.temp, 0, 'f', 1);
+        m_failures = 0;
         qCDebug(lcWeather) << "Weather" << info.comune << info.temp << "C" << info.hum << "%" << info.press << "hPa";
         emit newWeatherInfo(info);
     }
     else
-        qCWarning(lcWeather) << "Weather answer not understood:" << answer.left(80);
+        failed("answer not understood: " + QString::fromUtf8(answer.left(80)));
 }

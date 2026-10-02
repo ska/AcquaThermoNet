@@ -92,6 +92,19 @@ private slots:
         QVERIFY(!Weather::parseHttpDate("").isValid());
     }
 
+    void retryDelay()
+    {
+        QCOMPARE(Weather::retryDelayS(0, 600), 600);
+        QCOMPARE(Weather::retryDelayS(1, 600), 30);
+        QCOMPARE(Weather::retryDelayS(2, 600), 60);
+        QCOMPARE(Weather::retryDelayS(3, 600), 120);
+        QCOMPARE(Weather::retryDelayS(5, 600), 480);
+        QCOMPARE(Weather::retryDelayS(6, 600), 600);        /* capped at poll_s */
+        QCOMPARE(Weather::retryDelayS(1000, 600), 600);
+        QCOMPARE(Weather::retryDelayS(1, 60), 30);
+        QCOMPARE(Weather::retryDelayS(3, 60), 60);
+    }
+
     void parseMetNoInvalid_data()
     {
         QTest::addColumn<QByteArray>("json");
