@@ -17,8 +17,8 @@ libraries and `libudev.so.1` (used by QtSerialPort, present on the panel).
 build (Arm32, Arm64), so building in Qt Creator or with `make` is enough:
 
 ```
-<build dir>/dist/AcquaThermoNet_Package_Arm32_2.3.0.zip
-<build dir>/dist/AcquaThermoNet_Arm32_2.3.0.debug
+<build dir>/dist/AcquaThermoNet_Package_Arm32_2.4.0.zip
+<build dir>/dist/AcquaThermoNet_Arm32_2.4.0.debug
 ```
 
 - desktop builds: only with `CONFIG+=package` (qmake argument);
@@ -29,7 +29,7 @@ Debug information: the binary in the zip is **stripped** (the SDK compiles
 with `-g` also in release: 17 MB with, about 0.5 MB without). The full
 binary is kept next to the zip as `AcquaThermoNet_<arch>_<version>.debug`:
 keep it with the release to read a core dump of the device
-(`gdb AcquaThermoNet_Arm32_2.3.0.debug core`; `start.sh` enables core
+(`gdb AcquaThermoNet_Arm32_2.4.0.debug core`; `start.sh` enables core
 dumps). The strip is the one of the build toolchain (`$(STRIP)` of the
 Makefile, searched next to the compiler when the SDK environment is not
 loaded, as in Qt Creator); a missing or wrong strip stops the packaging

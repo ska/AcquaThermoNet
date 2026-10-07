@@ -7,6 +7,8 @@
 #include <QTimer>
 #include <QDateTime>
 #include <QGridLayout>
+#include <QHBoxLayout>
+#include <QVBoxLayout>
 
 MainWindow::MainWindow(ZoneModel *zones, Mqtt *mq, QWidget *parent)
     : QMainWindow(parent)
@@ -80,6 +82,27 @@ MainWindow::MainWindow(ZoneModel *zones, Mqtt *mq, QWidget *parent)
         ui->zonesLayout->addWidget(card);
         m_cards.append(card);
     }
+
+    /* Second page: chrono thermostat, pages chosen in a bar at the top */
+    m_chrono = new ChronoView(m_zones, this);
+    QWidget *chronoPage = new QWidget(this);
+    QVBoxLayout *chronoLayout = new QVBoxLayout(chronoPage);
+    chronoLayout->setContentsMargins(6, 6, 6, 6);
+    chronoLayout->addWidget(m_chrono);
+    ui->pages->addWidget(chronoPage);
+    m_editor = new ChronoEditor(m_zones, this);
+    QWidget *editorPage = new QWidget(this);
+    QVBoxLayout *editorLayout = new QVBoxLayout(editorPage);
+    editorLayout->setContentsMargins(6, 6, 6, 6);
+    editorLayout->addWidget(m_editor);
+    ui->pages->addWidget(editorPage);
+    connect(m_editor, &ChronoEditor::resetRequested, this, [this](int zone) {
+        m_zones->resetChrono(zone);
+        showChrono(zone);
+    });
+    ui->mainLayout->insertWidget(0, createTopBar());
+    connect(m_chrono, &ChronoView::viewChanged, this, &MainWindow::updateTopBar);
+    showZones();
     refreshAllZones();
 
     /* "updated N min" / "switch in N s" change with time, not only with data */
@@ -106,6 +129,110 @@ MainWindow::MainWindow(ZoneModel *zones, Mqtt *mq, QWidget *parent)
 MainWindow::~MainWindow()
 {
     delete ui;
+}
+
+/**
+ * @brief MainWindow::createTopBar
+ * Zones / Chrono page buttons; on the chrono page, day back and forward
+ */
+QWidget *MainWindow::createTopBar()
+{
+    QWidget *bar = new QWidget(this);
+    QHBoxLayout *layout = new QHBoxLayout(bar);
+    layout->setContentsMargins(6, 6, 6, 0);
+    layout->setSpacing(6);
+
+    auto button = [bar](const QString &text, const char *name) {
+        QPushButton *b = new QPushButton(text, bar);
+        b->setObjectName(name);
+        b->setFocusPolicy(Qt::NoFocus);
+        return b;
+    };
+    m_zonesButton  = button("Zones", "pageButton");
+    m_chronoButton = button("Chrono", "pageButton");
+    m_dayPrev      = button("‹", "dayButton");
+    m_dayNext      = button("›", "dayButton");
+    m_editButton   = button("Edit", "barButton");
+    m_cancelButton = button("Cancel", "barButton");
+    m_saveButton   = button("Save", "barButton");
+    m_saveButton->setProperty("primary", true);
+    m_dayLabel     = new QLabel(bar);
+    m_dayLabel->setObjectName("dayLabel");
+    m_dayLabel->setAlignment(Qt::AlignCenter);
+    m_dayLabel->setMinimumWidth(170);
+    for(QPushButton *b : { m_zonesButton, m_chronoButton })
+        b->setCheckable(true);
+
+    layout->addWidget(m_zonesButton);
+    layout->addWidget(m_chronoButton);
+    layout->addStretch(1);
+    layout->addWidget(m_dayPrev);
+    layout->addWidget(m_dayLabel);
+    layout->addWidget(m_dayNext);
+    layout->addWidget(m_editButton);
+    layout->addWidget(m_cancelButton);
+    layout->addWidget(m_saveButton);
+
+    connect(m_zonesButton,  &QPushButton::clicked, this, &MainWindow::showZones);
+    /* Chrono again on the chrono page: back to the overview */
+    connect(m_chronoButton, &QPushButton::clicked, this, [this] { showChrono(); });
+    connect(m_dayPrev, &QPushButton::clicked, m_chrono, [this] { m_chrono->stepDay(-1); });
+    connect(m_dayNext, &QPushButton::clicked, m_chrono, [this] { m_chrono->stepDay(+1); });
+    connect(m_editButton, &QPushButton::clicked, this, [this] { editChrono(m_chrono->zone()); });
+    connect(m_cancelButton, &QPushButton::clicked, this, [this] { showChrono(m_editor->zone()); });
+    connect(m_saveButton, &QPushButton::clicked, this, [this] {
+        m_zones->setChrono(m_editor->zone(), m_editor->config());
+        showChrono(m_editor->zone());
+    });
+    return bar;
+}
+
+void MainWindow::showZones()
+{
+    ui->pages->setCurrentIndex(PageZones);
+    updateTopBar();
+}
+
+void MainWindow::showChrono(int zone)
+{
+    if(zone < 0)
+        m_chrono->showOverview();
+    else
+        m_chrono->showZone(zone);
+    ui->pages->setCurrentIndex(PageChrono);
+    updateTopBar();
+}
+
+void MainWindow::editChrono(int zone)
+{
+    if(zone < 0 || zone >= m_zones->count())
+        return;
+    /* the profile of the day shown on the chrono page */
+    const ChronoConfig &c = m_zones->zone(zone).chrono;
+    m_editor->edit(zone, Chrono::isHoliday(m_chrono->date(), c) && !c.holiday.isEmpty());
+    ui->pages->setCurrentIndex(PageEditor);
+    updateTopBar();
+}
+
+void MainWindow::updateTopBar()
+{
+    const int page = ui->pages->currentIndex();
+    const bool chrono = page == PageChrono;
+    const bool editor = page == PageEditor;
+    m_zonesButton->setChecked(page == PageZones);
+    m_chronoButton->setChecked(page != PageZones);
+    /* the editor ends with Save or Cancel only */
+    m_zonesButton->setEnabled(!editor);
+    m_chronoButton->setEnabled(!editor);
+    m_dayPrev->setVisible(chrono);
+    m_dayNext->setVisible(chrono);
+    m_dayLabel->setVisible(chrono);
+    m_dayPrev->setEnabled(m_chrono->day() > 0);
+    m_dayNext->setEnabled(m_chrono->day() < ChronoView::MAX_DAY);
+    m_dayLabel->setText(m_chrono->dayText());
+    m_editButton->setVisible(chrono && m_chrono->zone() >= 0);
+    m_cancelButton->setVisible(editor);
+    m_saveButton->setVisible(editor);
 }
 
 /**
@@ -239,6 +366,31 @@ void MainWindow::refreshAllZones()
 }
 
 /**
+ * @brief MainWindow::setChronoLine
+ * Next chrono change ("22:30 → 17.0°"); "manual → 22:30" while the
+ * setpoint is not the chrono one; "chrono paused" while away
+ */
+void MainWindow::setChronoLine(ZoneCard *card, const ZoneData &t)
+{
+    const QDateTime now = QDateTime::currentDateTime();
+    if(!t.chrono.enabled)
+        card->setChrono("", false);
+    else if(!ZoneModel::clockValid(now))
+        card->setChrono("chrono: clock not set", false);
+    else if(m_zones->houseMode() == ZoneModel::ModeAway)
+        card->setChrono("chrono paused", false);
+    else
+    {
+        const ChronoPoint next = Chrono::next(now, t.chrono);
+        const bool manual = m_zones->chronoManual(m_zones->indexOf(t.name), now);
+        if(manual)
+            card->setChrono("manual → " + next.start.toString("HH:mm"), true);
+        else
+            card->setChrono(QString("%1 → %2°").arg(next.start.toString("HH:mm")).arg(next.temp, 0, 'f', 1), false);
+    }
+}
+
+/**
  * @brief MainWindow::zoneDataIsChanged
  * ZoneData to card texts. Status line shows the most important problem.
  * @param zone
@@ -263,6 +415,7 @@ void MainWindow::zoneDataIsChanged(int zone)
     card->setSetPoint(QString("%1 %2°").arg(setLabel[m_zones->houseMode()]).arg(t.target, 0, 'f', 1));
     card->setHeat(t.heat);
     card->setRelay(t.relay > 0 ? t.relayState : -1);
+    setChronoLine(card, t);
 
     if(t.relayFault)
         card->setStatus(QString("RELAY %1 FAULT").arg(t.relay), true);

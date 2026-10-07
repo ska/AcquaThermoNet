@@ -1,6 +1,8 @@
 #include <QTest>
 #include <QSignalSpy>
 #include <QSettings>
+#include <QFileInfo>
+#include <QDir>
 #include "configuration.h"
 #include "zonemodel.h"
 #include "testutil.h"
@@ -346,6 +348,189 @@ private slots:
         QVERIFY(!ZoneModel::parseMode("Away", m));
         QVERIFY(!ZoneModel::parseMode("", m));
         QCOMPARE(ZoneModel::modeName(ZoneModel::ModeAway), QString("away"));
+    }
+
+    /* Chrono of zone a; 2040-01-02 is a Monday (far from the real clock:
+     * checks at the mode changes use it) */
+    static QDateTime mon(int h, int m)
+    {
+        return QDateTime(QDate(2040, 1, 2), QTime(h, m));
+    }
+
+    void writeChrono()
+    {
+        QSettings ini(m_path, QSettings::IniFormat);
+        ini.setValue("CHRONO/holiday_days", "");
+        ini.setValue("CHRONO/a/enabled", true);
+        ini.setValue("CHRONO/a/weekday", QStringList{ "06:00=21", "08:00=17", "18:00=20.5" });
+    }
+
+    static QVariant stored(const Configuration &conf, const QString &key)
+    {
+        return QSettings(conf.statePath(), QSettings::IniFormat).value("ZONES/" + key);
+    }
+
+    void chronoApplies()
+    {
+        writeChrono();
+        Configuration conf(m_path);
+        ZoneModel zones(&conf, 0);
+        QVERIFY(zones.zone(0).chrono.enabled);
+        QVERIFY(!zones.zone(1).chrono.enabled);
+        QSignalSpy spy(&zones, &ZoneModel::setPointChanged);
+
+        zones.checkChrono(mon(7, 0));               /* no setpoint_at: current slot */
+        QCOMPARE(zones.zone(0).setPoint, 21.0);
+        QCOMPARE(zones.zone(0).target, 21.0);
+        QCOMPARE(zones.zone(1).setPoint, 18.0);     /* no chrono */
+        QCOMPARE(spy.count(), 1);
+        QCOMPARE(spy.at(0).at(0).toInt(), 0);
+
+        zones.checkChrono(mon(7, 30));              /* same slot: no signal */
+        QCOMPARE(spy.count(), 1);
+        zones.checkChrono(mon(8, 0));
+        QCOMPARE(zones.zone(0).setPoint, 17.0);
+        QCOMPARE(spy.count(), 2);
+
+        zones.flushPendingSaves();                  /* chrono values are not saved */
+        QVERIFY(!stored(conf, "a/setpoint").isValid());
+    }
+
+    void chronoManualUntilNextSlot()
+    {
+        writeChrono();
+        Configuration conf(m_path);
+        ZoneModel zones(&conf, 60000);
+        zones.checkChrono(mon(7, 0));
+        zones.setSetPoint(0, 19);
+        zones.checkChrono(mon(7, 30));
+        QCOMPARE(zones.zone(0).setPoint, 19.0);
+        zones.checkChrono(mon(8, 0));
+        QCOMPARE(zones.zone(0).setPoint, 17.0);
+        /* the pending manual value is not written any more */
+        zones.flushPendingSaves();
+        QVERIFY(!stored(conf, "a/setpoint").isValid());
+
+        zones.setSetPoint(0, 22);
+        zones.flushPendingSaves();
+        QCOMPARE(stored(conf, "a/setpoint").toDouble(), 22.0);
+        QVERIFY(qAbs(stored(conf, "a/setpoint_at").toLongLong() - QDateTime::currentSecsSinceEpoch()) < 5);
+    }
+
+    void chronoWindowDefers()
+    {
+        writeChrono();
+        Configuration conf(m_path);
+        ZoneModel zones(&conf, 60000);
+        zones.checkChrono(mon(7, 0));
+        QVERIFY(zones.setHouseMode(ZoneModel::ModeWindow));
+        zones.checkChrono(mon(8, 10));              /* new slot: waits */
+        QCOMPARE(zones.zone(0).setPoint, 21.0);
+        QCOMPARE(zones.zone(0).target, 8.0);
+        QVERIFY(zones.setHouseMode(ZoneModel::ModeNormal));
+        zones.checkChrono(mon(8, 15));              /* at the end: applies */
+        QCOMPARE(zones.zone(0).setPoint, 17.0);
+        QCOMPARE(zones.zone(0).target, 17.0);
+    }
+
+    void chronoBoostNoNewSlot()
+    {
+        writeChrono();
+        Configuration conf(m_path);
+        ZoneModel zones(&conf, 60000);
+        zones.checkChrono(mon(7, 0));
+        zones.setSetPoint(0, 19);
+        QVERIFY(zones.setHouseMode(ZoneModel::ModeBoost));
+        zones.checkChrono(mon(7, 20));
+        QCOMPARE(zones.zone(0).target, 25.0);       /* boost target stable */
+        QVERIFY(zones.setHouseMode(ZoneModel::ModeNormal));
+        zones.checkChrono(mon(7, 40));              /* no new slot: manual kept */
+        QCOMPARE(zones.zone(0).setPoint, 19.0);
+    }
+
+    void chronoAwayExit()
+    {
+        writeChrono();
+        Configuration conf(m_path);
+        ZoneModel zones(&conf, 60000);
+        zones.checkChrono(mon(7, 0));
+        zones.setSetPoint(0, 19);
+        QVERIFY(zones.setHouseMode(ZoneModel::ModeAway));
+        zones.checkChrono(mon(7, 30));              /* suspended */
+        QCOMPARE(zones.zone(0).setPoint, 19.0);
+        QCOMPARE(zones.zone(0).target, 15.0);
+        QVERIFY(zones.setHouseMode(ZoneModel::ModeNormal));
+        zones.checkChrono(mon(7, 40));              /* current slot again, though not new */
+        QCOMPARE(zones.zone(0).setPoint, 21.0);
+    }
+
+    void chronoAfterRestart_data()
+    {
+        QTest::addColumn<QDateTime>("savedAt");     /* invalid: no setpoint_at */
+        QTest::addColumn<double>("expected");
+        QTest::newRow("manual after the slot")  << mon(7, 30) << 19.0;
+        QTest::newRow("manual before the slot") << mon(5, 0)  << 21.0;
+        QTest::newRow("no time saved")          << QDateTime() << 21.0;
+    }
+
+    void chronoAfterRestart()
+    {
+        QFETCH(QDateTime, savedAt);
+        QFETCH(double, expected);
+        writeChrono();
+        {
+            QSettings state(QFileInfo(m_path).absoluteDir().filePath("state.ini"), QSettings::IniFormat);
+            state.setValue("ZONES/a/setpoint", 19);
+            if(savedAt.isValid())
+                state.setValue("ZONES/a/setpoint_at", savedAt.toSecsSinceEpoch());
+        }
+        Configuration conf(m_path);
+        ZoneModel zones(&conf, 60000);
+        QCOMPARE(zones.zone(0).setPoint, 19.0);
+        zones.checkChrono(mon(7, 45));
+        QCOMPARE(zones.zone(0).setPoint, expected);
+        zones.checkChrono(mon(8, 0));
+        QCOMPARE(zones.zone(0).setPoint, 17.0);
+    }
+
+    void chronoClock()
+    {
+        writeChrono();
+        Configuration conf(m_path);
+        ZoneModel zones(&conf, 60000);
+        zones.checkChrono(QDateTime(QDate(2000, 1, 3), QTime(7, 0)));   /* not set */
+        QCOMPARE(zones.zone(0).setPoint, 20.0);
+        zones.checkChrono(mon(8, 30));
+        QCOMPARE(zones.zone(0).setPoint, 17.0);
+        zones.setSetPoint(0, 19);
+        zones.checkChrono(mon(7, 0));               /* clock set back: nothing new */
+        QCOMPARE(zones.zone(0).setPoint, 19.0);
+    }
+
+    void chronoEdited()
+    {
+        writeChrono();
+        Configuration conf(m_path);
+        ZoneModel zones(&conf, 60000);
+        zones.setSetPoint(0, 19);                   /* manual: replaced by the new profile */
+        ChronoConfig c = zones.zone(0).chrono;
+        c.weekday = Chrono::parseProfile({ "00:00=22.5" }, "test");     /* all day, at any time */
+        QSignalSpy spy(&zones, &ZoneModel::setPointChanged);
+        zones.setChrono(0, c);
+        QCOMPARE(zones.zone(0).setPoint, 22.5);
+        QCOMPARE(spy.count(), 1);
+        QVERIFY(zones.zone(0).chrono.edited);
+        QVERIFY(conf.loadChrono("a").edited);
+
+        zones.resetChrono(0);                       /* setting.ini again */
+        QVERIFY(!zones.zone(0).chrono.edited);
+        QCOMPARE(zones.zone(0).chrono.weekday.size(), 3);
+
+        c.enabled = true;
+        c.weekday.clear();                          /* no weekday slot: off */
+        zones.setChrono(1, c);
+        QVERIFY(!zones.zone(1).chrono.enabled);
+        QCOMPARE(zones.zone(1).setPoint, 18.0);
     }
 
     void flushOnExit()

@@ -8,6 +8,7 @@
 #include <QDebug>
 #include "common.h"
 #include "zonemodel.h"
+#include "chrono.h"
 
 /*
  * setting.ini: configuration, written only by hand, never by the application.
@@ -18,7 +19,11 @@
  * deployed. Holds what changes at run time:
  *   [MQTT]   unique_id
  *   [ZONES]  <zone>\setpoint    (overrides the initial one of setting.ini)
+ *            <zone>\setpoint_at (epoch secs of that change: kept by the chrono
+ *                                until a slot begins after it)
  *   [RELAYS] <n>\last_on       (epoch secs of the last activation, valve exercise)
+ *   [CHRONO] <zone>\enabled, weekday, holiday  (edited on the panel: replace
+ *                                              those of setting.ini)
  *   [MODE]   house             (normal, window, away, boost: house mode, interface §8)
  *            until             (epoch secs: end of window or boost, resumed after a restart)
  *   [APP]    clean_exit        (false while running: tells a crash at next start)
@@ -54,6 +59,14 @@
  *   away_temp=15        (away: min(own, away_temp) until normal)
  *   boost_temp=25       (boost: every zone at max(own, boost_temp))
  *   boost_min=30        (then back to normal)
+ *
+ *   [CHRONO]            (chrono thermostat, per zone)
+ *   holiday_days=saturday, sunday      (days of the holiday profile, as [VALVE_EXERCISE] day)
+ *   salotto\enabled=false
+ *   salotto\weekday=06:30=20.5, 08:00=18, 17:00=20.5, 22:30=17
+ *                       (up to 8 HH:MM=temp slots; before the first one,
+ *                        the last one of the previous day holds)
+ *   salotto\holiday=08:00=20.5, 23:00=17   (empty: weekday profile)
  *
  *   [FROST_PROTECTION]  (zones without sensor data, outdoor below outdoor_below)
  *   enabled=true
@@ -176,6 +189,10 @@ public:
     void loadRelayLog(QString &path, int &keepMonths) const;
     TelegramConfig loadTelegram() const;
     ModeConfig loadModes() const;
+    ChronoConfig loadChrono(const QString &zoneName) const;
+    /* state.ini [CHRONO]: profiles edited on the panel */
+    void saveChrono(const QString &zoneName, const ChronoConfig &config);
+    void resetChrono(const QString &zoneName);
 
     /* state.ini [MODE] house: "normal", "window", "away", "boost" (empty:
      * never set); until: end of window or boost, epoch secs, 0 = none */
@@ -189,7 +206,8 @@ public:
     QString uniqueId(const QString &fallback);
 
     QVector<ZoneData> loadZones();
-    void saveSetPoints(const QMap<QString, double> &setpoints);
+    /* zone -> setpoint and its time (epoch secs, 0 = unknown: not saved) */
+    void saveSetPoints(const QMap<QString, QPair<double, qint64>> &setpoints);
 
     /* state.ini [RELAYS] <n>\last_on: relay -> epoch secs */
     QMap<int, qint64> loadRelayLastOn() const;
@@ -200,6 +218,7 @@ private:
     QString m_statePath;
 
     static bool validZoneName(const QString &name);
+    static int  parseDay(const QString &day);
     static int  relayNum(QSettings &settings, const QString &zoneName);
     static void syncToDisk(QSettings &settings);
 };

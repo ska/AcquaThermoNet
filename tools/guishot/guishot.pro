@@ -13,6 +13,9 @@ include($$ATN_SRC/version.pri)
 
 SOURCES += \
     guishot.cpp \
+    $$ATN_SRC/chrono.cpp \
+    $$ATN_SRC/chronoeditor.cpp \
+    $$ATN_SRC/chronoview.cpp \
     $$ATN_SRC/configuration.cpp \
     $$ATN_SRC/logging.cpp \
     $$ATN_SRC/mainwindow.cpp \
@@ -24,6 +27,8 @@ SOURCES += \
     $$ATN_SRC/zonemodel.cpp
 
 HEADERS += \
+    $$ATN_SRC/chronoeditor.h \
+    $$ATN_SRC/chronoview.h \
     $$ATN_SRC/mainwindow.h \
     $$ATN_SRC/mqtt.h \
     $$ATN_SRC/zonecard.h \

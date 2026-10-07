@@ -11,11 +11,14 @@ do is here.
 RoomSense also has a panel in the house: it shows the zones and changes
 their setpoints, always through AcquaThermoNet, which owns them (§7), and
 switches the whole house to the "windows open", "away" or "boost" mode
-(§8).
+(§8), and shows and edits the chrono thermostat program of each zone
+(§9).
 
-Interface version: matches AcquaThermoNet **2.3.0**. The readings are
+Interface version: matches AcquaThermoNet **2.4.0**. The readings are
 unchanged since 2.1.0; the setpoint commands of §7 use topics the
-controller handles since 2.2.2; the house mode of §8 needs 2.3.0.
+controller handles since 2.2.2; the house mode of §8 needs 2.3.0; the
+chrono thermostat of §9 needs 2.4.0 (it also changes the setpoints on its
+own, §7).
 
 ---
 
@@ -35,8 +38,8 @@ flowchart LR
     PLANT["Pumps and<br/>zone valves"]
 
     BLE1 & BLE2 & BLEn -- "BLE advertising" --> GW
-    GW -- "RoomSense/apartment/ZONE/data<br/>AcquaThermoNet/ZONE/set_temp<br/>AcquaThermoNet/mode/set" --> B
-    B -- "AcquaThermoNet/status, ZONE/state_temp, ZONE/state_mode<br/>mode/state" --> GW
+    GW -- "RoomSense/apartment/ZONE/data<br/>AcquaThermoNet/ZONE/set_temp<br/>AcquaThermoNet/mode/set<br/>ZONE/chrono/set, ZONE/chrono/profile/set" --> B
+    B -- "AcquaThermoNet/status, ZONE/state_temp, ZONE/state_mode<br/>mode/state, ZONE/chrono, ZONE/chrono/profile" --> GW
     B <--> ATN
     B --> HA
     ATN -- "Modbus RTU" --> PLANT
@@ -44,9 +47,9 @@ flowchart LR
 
 | | RoomSense (sensor gateway) | AcquaThermoNet |
 |---|---|---|
-| Owns | BLE scanning, decoding, sensor → zone mapping, filtering; the house panel | zones, **setpoints** (the only source of truth), **house mode** (saved setpoints, timer, restore), regulation, relays |
-| Publishes | one reading per zone on `RoomSense/apartment/<zone>/data`; setpoint commands on `AcquaThermoNet/<zone>/set_temp` (§7); mode commands on `AcquaThermoNet/mode/set` (§8) | its own topics under `AcquaThermoNet/…` |
-| Subscribes | `AcquaThermoNet/status`, `AcquaThermoNet/<zone>/state_temp`, `…/state_mode` (§7), `AcquaThermoNet/mode/state` (§8) | `RoomSense/apartment/#`, `AcquaThermoNet/#` |
+| Owns | BLE scanning, decoding, sensor → zone mapping, filtering; the house panel | zones, **setpoints** (the only source of truth), **house mode** (saved setpoints, timer, restore), **chrono programs**, regulation, relays |
+| Publishes | one reading per zone on `RoomSense/apartment/<zone>/data`; setpoint commands on `AcquaThermoNet/<zone>/set_temp` (§7); mode commands on `AcquaThermoNet/mode/set` (§8); chrono commands on `AcquaThermoNet/<zone>/chrono/set` and `…/chrono/profile/set` (§9) | its own topics under `AcquaThermoNet/…` |
+| Subscribes | `AcquaThermoNet/status`, `AcquaThermoNet/<zone>/state_temp`, `…/state_mode` (§7), `AcquaThermoNet/mode/state` (§8), `AcquaThermoNet/<zone>/chrono`, `…/chrono/profile` (§9) | `RoomSense/apartment/#`, `AcquaThermoNet/#` |
 
 The two applications never talk directly: only through the broker. For
 the readings there is no request/response, no acknowledgement: the gateway
@@ -74,6 +77,7 @@ entities point to it), and sends setpoints the same way as the panel.
 | Setpoint commands | `AcquaThermoNet/<zone>/set_temp`, plain number, retain false (§7) |
 | Controller state read | `AcquaThermoNet/status`, `…/<zone>/state_temp`, `…/<zone>/state_mode`, all retained (§7) |
 | House mode | command `AcquaThermoNet/mode/set` (`normal`/`window`/`away`/`boost`), state `AcquaThermoNet/mode/state` JSON, retained (§8) |
+| Chrono thermostat | commands `AcquaThermoNet/<zone>/chrono/set` (`on`/`off`) and `…/chrono/profile/set` (JSON); state `…/chrono` and program `…/chrono/profile`, JSON, retained (§9) |
 
 ---
 
@@ -278,8 +282,10 @@ own: it shows what the controller publishes and sends commands.
 
 Rules for the gateway:
 
-1. **Only `set_temp`** (and `mode/set`, §8). Never publish `state_temp`,
-   `state_mode`, `set_mode`, `mode/state` or `AcquaThermoNet/status`.
+1. **Only `set_temp`** (and `mode/set`, §8, `chrono/set` and
+   `chrono/profile/set`, §9). Never publish `state_temp`, `state_mode`,
+   `set_mode`, `mode/state`, `chrono`, `chrono/profile` or
+   `AcquaThermoNet/status`.
 2. **Retain false.** A retained command would be applied again at every
    controller restart, undoing the changes made since then from its panel
    or Home Assistant.
@@ -297,6 +303,12 @@ Rules for the gateway:
    controller (`Invalid setpoint for zone …`) and ignored.
 7. QoS 1 for the commands, so that a press is not lost silently up to the
    broker; any QoS for the subscriptions.
+8. **Setpoints also change by themselves.** Since 2.4.0 the controller
+   can run a chrono thermostat per zone: at the start of each time slot
+   it sets the zone's setpoint and publishes `state_temp`, with no
+   command from anyone. A `set_temp` is a manual change: it lasts until
+   the next slot of that zone. Showing `state_temp` as it arrives (rule 3)
+   is enough. The chrono state and program are in §9.
 
 ```mermaid
 sequenceDiagram
@@ -402,7 +414,169 @@ sequenceDiagram
 
 ---
 
-## 9. Testing the integration
+## 9. Chrono thermostat from the RoomSense panel
+
+Since 2.4.0 each zone can follow a weekly program (chrono thermostat):
+a **weekday** and a **holiday** profile of up to 8 slots, "from this time
+on, this setpoint". The RoomSense panel shows the program of each zone,
+turns it on and off and edits the profiles. As for the setpoints and the
+house mode, **AcquaThermoNet owns the program**: it validates, stores and
+runs it, also when RoomSense is off; the program is also edited on the
+controller panel and turned on and off from Home Assistant. RoomSense
+keeps no program of its own: it shows what the controller publishes and
+sends commands.
+
+What the chrono does to the setpoints (the controller does it all):
+
+- at the start of each slot the zone's own setpoint becomes the slot
+  value, published as `state_temp` (§7 rule 8);
+- a manual `set_temp` lasts until the next slot of that zone;
+- during `window` and `boost` a new slot waits for the end of the mode;
+  during `away` the chrono is suspended, and at the end of `away` the
+  slot in force applies at once (§8);
+- before the first slot of a day the last slot of the previous day holds;
+  `holiday_days` (default Saturday and Sunday) chooses the days of the
+  holiday profile; an empty holiday profile means "as weekday".
+
+| Topic | Dir. (RoomSense) | Payload | Retain | Notes |
+|---|---|---|---|---|
+| `AcquaThermoNet/<zone>/chrono` | in | JSON, chrono state (below) | yes | when it changes: next change, manual, paused |
+| `AcquaThermoNet/<zone>/chrono/profile` | in | JSON, the program (below) | yes | at connect, at every change (from any panel or Home Assistant) and after every `chrono/profile/set`, also when refused |
+| `AcquaThermoNet/<zone>/chrono/set` | **out** | `on` / `off` | **no** | QoS 1; also from the Home Assistant switch |
+| `AcquaThermoNet/<zone>/chrono/profile/set` | **out** | JSON, the new program or a reset (below) | **no** | QoS 1 |
+
+### 9.1 Chrono state: `<zone>/chrono`
+
+```json
+{"chrono":"on","manual":false,"next_change":"22:30",
+ "next_change_at":"2026-10-03T22:30:00+02:00","next_setpoint":17,
+ "paused":false,"profile":"weekday"}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `chrono` | string | `on` / `off`; only this field when `off` |
+| `paused` | bool | house mode `away`: chrono suspended |
+| `manual` | bool | the zone's own setpoint is not the one of the slot in force (a manual change, until `next_change`) |
+| `profile` | string | `weekday` / `holiday`: the profile of today |
+| `next_change` | string | `HH:MM` of the next slot, controller local time |
+| `next_change_at` | string | the same, ISO 8601 with the UTC offset |
+| `next_setpoint` | number | setpoint of the next slot |
+
+`profile` and the `next_…` fields are absent while the controller clock
+is not set. This is the controller's own view (its clock): show it as it
+is, e.g. `22:30 → 17.0°`, `manual → 22:30` or `chrono paused` on the zone
+card. Republished at
+least when a field changes; checked every minute.
+
+### 9.2 Program: `<zone>/chrono/profile`
+
+```json
+{"enabled":true,"edited":true,"holiday_days":[6,7],
+ "weekday":[{"at":"06:30","temp":20.5},{"at":"08:00","temp":18},
+            {"at":"17:00","temp":20.5},{"at":"22:30","temp":17}],
+ "holiday":[{"at":"08:00","temp":20.5},{"at":"23:00","temp":17}]}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `enabled` | bool | chrono on (same as `chrono` of 9.1) |
+| `edited` | bool | edited on a panel or from Home Assistant (stored by the controller); `false`: the program of the controller configuration |
+| `holiday_days` | array of integers | days of the holiday profile, 1 = Monday … 7 = Sunday; may be empty. Controller configuration only: not changed by commands |
+| `weekday` | array of slots | sorted by time, 0…8 slots; empty only with `enabled` false |
+| `holiday` | array of slots | sorted by time, 0…8 slots; empty: the weekday profile on the holiday days too |
+
+A slot is `{"at":"HH:MM","temp":20.5}`: from `at` (local time, 24 h, two
+digits each) the setpoint `temp`, 5…25 °C in steps of 0.5.
+
+To draw a day, take its profile (`holiday` if the day is in
+`holiday_days` and `holiday` is not empty, else `weekday`); before the
+first slot the last slot of the previous day holds. The day and time come
+from the RoomSense clock, which may differ slightly from the controller's:
+for the next change prefer 9.1.
+
+### 9.3 Commands
+
+**On/off**: `AcquaThermoNet/<zone>/chrono/set` `on` or `off`. `on` with
+no weekday slot is refused (logged), the chrono stays off. Turning it on
+applies the slot in force at once.
+
+**New program**: `AcquaThermoNet/<zone>/chrono/profile/set`, the whole
+program of the zone:
+
+```json
+{"enabled":true,
+ "weekday":[{"at":"06:30","temp":20.5},{"at":"22:30","temp":17}],
+ "holiday":[]}
+```
+
+- `enabled`, `weekday` and `holiday` are all required: the command
+  replaces the program, nothing is merged. `holiday_days` is not accepted
+  (ignored if present).
+- Valid program: at most 8 slots per profile; `at` exactly `HH:MM`,
+  00:00…23:59 (`6:30` and `24:00` are refused); no time twice in a
+  profile; `temp` a JSON number (not a string) 5…25, rounded to 0.5 by
+  the controller; the slots in any order (the controller sorts them);
+  `enabled` true needs at least one weekday slot. Steps of 15 minutes are
+  what the panels use, not a rule.
+- **Anything invalid refuses the whole command** (logged with the
+  reason, e.g. `Invalid chrono program for zone salotto : weekday 00:00:
+  temp 30 outside 5...25`) and the program does not change.
+  Unlike the controller configuration, no slot is dropped silently.
+- Accepted: the controller stores it (it survives restarts), logs it and
+  applies the slot in force at once, also replacing a manual setpoint
+  (during `window` or `boost`: at the end of the mode; during `away`: at
+  its end).
+
+**Reset**: `{"reset":true}` on `chrono/profile/set` goes back to the
+program of the controller configuration (`edited` false), applied at
+once as above.
+
+In every case `chrono/profile` is published again (also unchanged, also
+when refused); `chrono` and `state_temp` follow when they change, in no
+fixed order. A command for an unknown zone is ignored silently, with no
+answer (§7 rule 6).
+
+Rules for the gateway:
+
+1. Show the program from the retained `chrono/profile` only. After a
+   command show "saving" until `chrono/profile` arrives; then show what
+   arrived: if it is not what was sent (refused, or rounded), tell the
+   user. Compare after sorting the slots and rounding the setpoints to
+   0.5, as the controller does. Without an answer within ~5 s, show the last program again
+   (command lost).
+2. One `chrono/profile/set` per Save of the editor, never one per +/−
+   press: the controller stores every accepted command.
+3. **Last command wins.** The program may also change on the controller
+   panel or from Home Assistant while the user is editing on RoomSense:
+   if `chrono/profile` changes during an edit, warn the user before a
+   Save overwrites it.
+4. No command while the controller is not reachable (§7 rule 5);
+   retain false, QoS 1 (§7 rules 2 and 7).
+5. The zone −/+ stay as in §7: a manual setpoint while the chrono runs is
+   normal (`manual` in 9.1).
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant GW as RoomSense panel
+    participant B as Broker
+    participant ATN as AcquaThermoNet
+
+    U->>GW: edit salotto weekday, Save
+    Note over GW: "saving"
+    GW->>B: AcquaThermoNet/salotto/chrono/profile/set {"enabled":true,...}
+    B->>ATN: command
+    ATN->>ATN: validate, store, slot in force applies
+    ATN->>B: salotto/chrono/profile {...,"edited":true} (retained)
+    ATN->>B: salotto/chrono, salotto/state_temp if changed (retained, any order)
+    B->>GW: chrono/profile, chrono, state_temp
+    Note over GW: new program shown as saved
+```
+
+---
+
+## 10. Testing the integration
 
 With `mosquitto_pub` (or the gateway itself), against the real broker:
 
@@ -427,6 +601,13 @@ mosquitto_pub -h <broker> -u <user> -P <password> \
   -t AcquaThermoNet/mode/set -m window
 mosquitto_pub -h <broker> -u <user> -P <password> \
   -t AcquaThermoNet/mode/set -m normal
+
+# a chrono program for the living room, then back to the configuration (§9)
+mosquitto_pub -h <broker> -u <user> -P <password> \
+  -t AcquaThermoNet/salotto/chrono/profile/set \
+  -m '{"enabled":true,"weekday":[{"at":"06:30","temp":20.5},{"at":"22:30","temp":17}],"holiday":[]}'
+mosquitto_pub -h <broker> -u <user> -P <password> \
+  -t AcquaThermoNet/salotto/chrono/profile/set -m '{"reset":true}'
 ```
 
 What to check:
@@ -447,13 +628,18 @@ What to check:
 | `mode/set away` | `mode/state {"mode":"away"}`, every `state_temp` at min(own, 15) until `normal` |
 | `mode/set boost` | `mode/state {"mode":"boost","remaining_s":1800}`, every `state_temp` at 25; after 30 min (or `normal`) the own setpoints again |
 | `set_temp` 22 during `away` | `state_temp 15`; after `normal`, `state_temp 22` |
+| `chrono/profile/set` program above | `chrono/profile` with `"edited":true` and the new slots, `chrono` with the next change, `state_temp` of the slot in force (20.5 or 17) |
+| `chrono/profile/set` with `"temp":30` or 9 slots | refused, controller log `Invalid chrono program for zone …`, `chrono/profile` republished unchanged |
+| `chrono/set off` | `chrono {"chrono":"off"}`, `chrono/profile` with `"enabled":false`; the setpoint stays |
+| `chrono/profile/set {"reset":true}` | `chrono/profile` of the controller configuration, `"edited":false` |
+| Program edited on the controller panel | `chrono/profile` republished: RoomSense shows the new program |
 
 The controller's Telegram bot (`/zone salotto`) also shows the last reading
 and how long ago it arrived.
 
 ---
 
-## 10. Acceptance checklist for RoomSense
+## 11. Acceptance checklist for RoomSense
 
 - [ ] Topic `RoomSense/apartment/<zone>/data`, zone names from configuration, exact case
 - [ ] JSON object with numeric `temperature` in °C in every message
@@ -464,18 +650,20 @@ and how long ago it arrived.
 - [ ] Retain false; no stale buffered readings sent after a reconnect
 - [ ] Several sensors in one zone combined into one value by the gateway
 - [ ] Own client id; optional `RoomSense/status` availability with Will
-- [ ] Under `AcquaThermoNet/` only `…/<zone>/set_temp` (plain number, retain false) and `mode/set` (`normal`/`window`/`away`/`boost`, retain false); nothing under `homeassistant/climate/`
+- [ ] Under `AcquaThermoNet/` only `…/<zone>/set_temp` (plain number), `mode/set` (`normal`/`window`/`away`/`boost`), `…/<zone>/chrono/set` (`on`/`off`) and `…/<zone>/chrono/profile/set` (JSON), all retain false; nothing under `homeassistant/`
 - [ ] Setpoints shown from the retained `state_temp`, pending until confirmed; no commands while the controller is offline
 - [ ] House mode shown from the retained `mode/state`, pending until confirmed, `remaining_s` counted down locally; zone −/+ disabled while a mode is active
+- [ ] Chrono program shown from the retained `chrono/profile`, next change from `chrono`; one `chrono/profile/set` per Save, with the whole program; "saving" until `chrono/profile` arrives, refusal shown; warning when the program changes during an edit
 
 ---
 
-## 11. Changing the contract
+## 12. Changing the contract
 
 The topic prefixes and tails, the field names, the setpoint step and range
-(`TEMP_STEP`, `TEMP_MIN`, `TEMP_MAX`), the timeout and the house mode
-values are defined in AcquaThermoNet (`climatezones.h`, `mqttparse.cpp`,
-`[REGULATION] sensor_timeout_s`, `[MODES]`). Any change on either side (new zone, renamed zone,
+(`TEMP_STEP`, `TEMP_MIN`, `TEMP_MAX`), the timeout, the house mode values
+and the chrono limits are defined in AcquaThermoNet (`climatezones.h`,
+`mqttparse.cpp`, `chrono.h`, `[REGULATION] sensor_timeout_s`, `[MODES]`,
+`[CHRONO]`). Any change on either side (new zone, renamed zone,
 different topic or field) must be agreed and made in both applications at
 the same time; a new zone also needs its relay configured in the
 controller. Full controller documentation: [`DOCUMENTATION.md`](DOCUMENTATION.md).

@@ -92,6 +92,30 @@ void Configuration::loadSerial(QString &port, qint32 &baud) const
 }
 
 /**
+ * @brief Configuration::parseDay
+ * @param day   "monday".."sunday" (at least 3 letters, any case) or 1..7
+ * @return 1 = Monday .. 7 = Sunday (QDate::dayOfWeek), 0 if invalid
+ */
+int Configuration::parseDay(const QString &day)
+{
+    static const QStringList days = { "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday" };
+    const QString d = day.trimmed().toLower();
+    bool ok;
+    const int n = d.toInt(&ok);
+    if(ok)
+        return n >= 1 && n <= 7 ? n : 0;
+    if(d.length() >= 3)
+    {
+        for(int i=0; i<days.size(); i++)
+        {
+            if(days[i].startsWith(d))
+                return i + 1;
+        }
+    }
+    return 0;
+}
+
+/**
  * @brief Configuration::loadRegulation
  * [REGULATION] min_cycle_s (0 disables), sensor_timeout_s (> 0).
  * Missing or invalid values keep the defaults of RegulationConfig.
@@ -147,19 +171,9 @@ RegulationConfig Configuration::loadRegulation() const
     settings.beginGroup("VALVE_EXERCISE");
     ex.enabled = settings.value("enabled", ex.enabled).toBool();
 
-    static const QStringList days = { "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday" };
-    const QString day = settings.value("day", "sunday").toString().trimmed().toLower();
-    int d = day.toInt(&ok);
-    if(!ok)
-    {
-        d = 0;
-        for(int i=0; i<days.size(); i++)
-        {
-            if(day.length() >= 3 && days[i].startsWith(day))
-                d = i + 1;
-        }
-    }
-    if(d >= 1 && d <= 7)
+    const QString day = settings.value("day", "sunday").toString().trimmed();
+    const int d = parseDay(day);
+    if(d > 0)
         ex.dayOfWeek = d;
     else
         qCWarning(lcConfig) << "Invalid VALVE_EXERCISE/day" << day << ", using sunday";
@@ -355,6 +369,87 @@ ModeConfig Configuration::loadModes() const
     return mc;
 }
 
+/**
+ * @brief Configuration::loadChrono
+ * [CHRONO] holiday_days (days, as [VALVE_EXERCISE] day), <zone>\enabled,
+ * <zone>\weekday, <zone>\holiday ("HH:MM=temp" slots). The zone keys
+ * come from state.ini once edited on the panel (saveChrono). Enabled with
+ * no valid weekday slot: disabled.
+ */
+ChronoConfig Configuration::loadChrono(const QString &zoneName) const
+{
+    QSettings settings(m_path, QSettings::IniFormat);
+    settings.beginGroup("CHRONO");
+    ChronoConfig cc;
+
+    /* "saturday, sunday" or a list: QSettings splits on commas */
+    QStringList days = settings.value("holiday_days", "saturday, sunday").toStringList();
+    if(days.size() == 1)
+        days = days.first().split(',');
+    for(const QString &day : days)
+    {
+        const int d = parseDay(day);
+        if(d > 0)
+            cc.holidayDays |= 1 << d;
+        else if(!day.trimmed().isEmpty())
+            qCWarning(lcConfig) << "Invalid CHRONO/holiday_days entry" << day;
+    }
+
+    settings.endGroup();
+
+    /* Profiles edited on the panel (state.ini) replace those of setting.ini */
+    QSettings state(m_statePath, QSettings::IniFormat);
+    cc.edited = state.contains("CHRONO/" + zoneName + "/enabled");
+    QSettings &src = cc.edited ? state : settings;
+    src.beginGroup("CHRONO/" + zoneName);
+    /* a list, or a single string: QSettings splits on commas only when unquoted */
+    auto entries = [&src](const char *key) {
+        QStringList l = src.value(key).toStringList();
+        if(l.size() == 1)
+            l = l.first().split(',');
+        return l;
+    };
+    cc.enabled = src.value("enabled", false).toBool();
+    const QString where = QString(cc.edited ? "state.ini " : "") + "CHRONO/" + zoneName + "/";
+    cc.weekday = Chrono::parseProfile(entries("weekday"), where + "weekday");
+    cc.holiday = Chrono::parseProfile(entries("holiday"), where + "holiday");
+    src.endGroup();
+
+    if(cc.enabled && cc.weekday.isEmpty())
+    {
+        qCWarning(lcConfig).noquote() << where + "enabled without weekday slots: chrono disabled";
+        cc.enabled = false;
+    }
+    return cc;
+}
+
+/**
+ * @brief Configuration::saveChrono
+ * Profiles edited on the panel, to state.ini: from now on they replace the
+ * zone keys of setting.ini [CHRONO] (holiday_days stays there)
+ */
+void Configuration::saveChrono(const QString &zoneName, const ChronoConfig &config)
+{
+    QSettings state(m_statePath, QSettings::IniFormat);
+    state.beginGroup("CHRONO/" + zoneName);
+    state.setValue("enabled", config.enabled);
+    state.setValue("weekday", Chrono::toString(config.weekday));
+    state.setValue("holiday", Chrono::toString(config.holiday));
+    state.endGroup();
+    syncToDisk(state);
+}
+
+/**
+ * @brief Configuration::resetChrono
+ * Back to the profiles of setting.ini
+ */
+void Configuration::resetChrono(const QString &zoneName)
+{
+    QSettings state(m_statePath, QSettings::IniFormat);
+    state.remove("CHRONO/" + zoneName);
+    syncToDisk(state);
+}
+
 QString Configuration::loadHouseMode() const
 {
     return QSettings(m_statePath, QSettings::IniFormat).value("MODE/house").toString();
@@ -488,13 +583,21 @@ QVector<ZoneData> Configuration::loadZones()
         const QString key = "ZONES/" + name + "/setpoint";
         bool ok;
         double v = state.value(key).toDouble(&ok);
-        if(!ok)
+        if(ok)
+        {
+            /* chrono: a manual setpoint holds until a slot begins after it */
+            const qint64 at = state.value(key + "_at").toLongLong();
+            if(at > 0)
+                z.chronoDone = QDateTime::fromSecsSinceEpoch(at);
+        }
+        else
             v = settings.value(key).toDouble(&ok);
         if(ok)
             z.setPoint = v;
         else
             qCWarning(lcConfig) << "No setpoint for zone" << name << ", using" << z.setPoint;
 
+        z.chrono = loadChrono(name);
         z.relay = relayNum(settings, name);
         if(z.relay > 0 && relays.contains(z.relay))
             qCWarning(lcConfig) << "Relay" << z.relay << "used by more than one zone";
@@ -511,15 +614,20 @@ QVector<ZoneData> Configuration::loadZones()
 /**
  * @brief Configuration::saveSetPoints
  * To state.ini, one write and one flush for all the changed zones
- * @param setpoints     zone name -> setpoint
+ * @param setpoints     zone name -> setpoint, epoch secs of the change
  */
-void Configuration::saveSetPoints(const QMap<QString, double> &setpoints)
+void Configuration::saveSetPoints(const QMap<QString, QPair<double, qint64>> &setpoints)
 {
     QSettings state(m_statePath, QSettings::IniFormat);
     for(auto it = setpoints.cbegin(); it != setpoints.cend(); ++it)
     {
-        qCInfo(lcConfig).noquote() << "Save setpoint zone" << it.key() << "=" << it.value();
-        state.setValue("ZONES/" + it.key() + "/setpoint", it.value());
+        qCInfo(lcConfig).noquote() << "Save setpoint zone" << it.key() << "=" << it.value().first;
+        const QString key = "ZONES/" + it.key() + "/setpoint";
+        state.setValue(key, it.value().first);
+        if(it.value().second > 0)
+            state.setValue(key + "_at", it.value().second);
+        else
+            state.remove(key + "_at");
     }
     syncToDisk(state);
 }

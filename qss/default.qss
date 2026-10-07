@@ -7,6 +7,40 @@ QStatusBar::item                { border: none; }
 QLabel#barStatus                { color: lightgray; font: 9pt; }
 QLabel#barNetwork               { color: #AAAAAA; font: 9pt; }
 
+/* Top bar: pages, chrono day */
+QPushButton#pageButton          { font: bold 13pt; min-width: 104px; min-height: 32px; max-height: 32px;
+                                  color: #AAAAAA; background: #2A2A2A; }
+QPushButton#pageButton:checked  { color: white; background: #AD1625; }
+QPushButton#dayButton           { font: bold 18pt; min-width: 44px; max-width: 44px; min-height: 32px; max-height: 32px; }
+QPushButton#dayButton:disabled  { color: #666666; background: #2A2A2A; }
+QLabel#dayLabel                 { color: white; font: bold 12pt; }
+QPushButton#barButton           { font: bold 13pt; min-width: 96px; min-height: 32px; max-height: 32px;
+                                  color: #D3D3D3; background: #2A2A2A; }
+QPushButton#barButton[primary="true"] { color: white; background: #AD1625; }
+QPushButton#pageButton:disabled { color: #666666; }
+QPushButton#pageButton:checked:disabled { color: #DDDDDD; background: #6E0A1E; }
+
+/* Chrono editor */
+QFrame#chronoHeader, QFrame#slotRow { background: #2A2A2A; border-radius: 6px; }
+QLabel#chronoZone               { color: white; font: bold 14pt; }
+QPushButton#profileButton       { font: bold 11pt; min-width: 84px; min-height: 30px; max-height: 30px;
+                                  color: #AAAAAA; background: #3C3C3C; }
+QPushButton#profileButton:checked { color: white; background: #AD1625; }
+QPushButton#chronoAction        { font: 10pt; min-width: 70px; min-height: 30px; max-height: 30px;
+                                  padding: 0 8px; color: #D3D3D3; background: #3C3C3C; }
+QPushButton#chronoAction:disabled { color: #666666; }
+QPushButton#chronoEnable        { font: bold 11pt; min-width: 104px; min-height: 30px; max-height: 30px;
+                                  color: #D3D3D3; background: #3C3C3C; }
+QPushButton#chronoEnable:checked { color: white; background: #3E7D3A; }
+QPushButton#chronoEnable:disabled { color: #666666; }
+QPushButton#slotButton          { font: bold 18pt; min-width: 42px; max-width: 42px; min-height: 38px; max-height: 38px; }
+QPushButton#slotRemove          { font: bold 16pt; min-width: 38px; max-width: 38px; min-height: 38px; max-height: 38px;
+                                  color: #D3D3D3; background: #3C3C3C; }
+QPushButton#slotRemove:disabled { color: #555555; }
+QPushButton#slotAdd             { font: bold 13pt; min-height: 46px; color: #D3D3D3; background: #2A2A2A;
+                                  border: 1px dashed #777777; }
+QLabel#slotValue                { color: white; font: bold 15pt; }
+
 /* Zone card */
 QFrame#zoneCard                 { background: #2A2A2A; border: 2px solid #1A1A1A; border-radius: 6px; }
 QFrame#zoneCard[alarm="true"]   { border: 2px solid #AD1625; }
@@ -17,6 +51,8 @@ QLabel#zoneName                 { color: white; font: bold 13pt; }
 QLabel#zoneTemp                 { color: white; font: bold 28pt; }
 QLabel#zoneInfo                 { color: #AAAAAA; font: 9pt; }
 QLabel#zoneSetPoint             { color: white; font: bold 16pt; }
+QLabel#zoneChrono               { color: #AAAAAA; font: 9pt; }
+QLabel#zoneChrono[manual="true"] { color: #E0A030; }
 QLabel#zoneStatus               { color: #AAAAAA; font: 9pt; }
 QLabel#zoneStatus[alarm="true"] { color: white; background: #AD1625; font: bold 9pt; border-radius: 3px; }
 

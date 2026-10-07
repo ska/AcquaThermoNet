@@ -49,6 +49,8 @@ private slots:
     void publishMode(int zone);
     void publishHouseMode();
     void publishWeather();
+    void publishChrono(int zone);
+    void publishChronoProfile(int zone);
 
 private:
     QMqttClient             *m_client;
@@ -64,6 +66,8 @@ private:
     QTimer                  *m_tlsConnectTimer;
     QTimer                  *m_ReconnectTimer;
     QTimer                  *m_houseModeTimer;  /* window countdown republished every minute */
+    QVector<QByteArray>     m_chronoSent;       /* last <zone>/chrono payloads: only changes are sent */
+    QVector<QByteArray>     m_profileSent;      /* last <zone>/chrono/profile payloads, the same */
     /* Outdoor weather */
     bool                    m_weatherEnabled = false;
     int                     m_weatherExpireS = 0;

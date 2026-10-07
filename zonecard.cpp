@@ -34,6 +34,10 @@ ZoneCard::ZoneCard(QWidget *parent) : QFrame(parent)
     m_status    = label("zoneStatus");
     /* Status text never widens the card: all cards keep the same width */
     m_status->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_chrono    = label("zoneChrono");
+    /* as the status: never widens the card */
+    m_chrono->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_chrono->setTextFormat(Qt::RichText);
     m_heatIcon  = label("zoneHeatIcon");
     m_relayIcon = label("zoneRelayIcon");
 
@@ -71,11 +75,13 @@ ZoneCard::ZoneCard(QWidget *parent) : QFrame(parent)
     main->addWidget(m_status);
     main->addWidget(separator);
     main->addWidget(m_setPoint);
+    main->addWidget(m_chrono);
     main->addLayout(buttonLayout);
 
     setHeat(false);
     setRelay(-1);
     setStatus("", false);
+    setChrono("", false);
 }
 
 void ZoneCard::setName(const QString &text)
@@ -108,6 +114,22 @@ void ZoneCard::setStatus(const QString &text, bool alarm)
     m_status->setText(text);
     setAlarmProperty(m_status, alarm);
     setAlarmProperty(this, alarm);
+}
+
+/**
+ * @brief ZoneCard::setChrono
+ * Clock icon and text; empty: blank line, so that the cards stay aligned
+ */
+void ZoneCard::setChrono(const QString &text, bool manual)
+{
+    m_chrono->setText(text.isEmpty() ? QString("&nbsp;")
+                      : QString("<img src=\":/images/clock.png\" width=\"12\" height=\"12\">&nbsp;") + text.toHtmlEscaped());
+    if(m_chrono->property("manual").toBool() != manual || !m_chrono->property("manual").isValid())
+    {
+        m_chrono->setProperty("manual", manual);
+        m_chrono->style()->unpolish(m_chrono);
+        m_chrono->style()->polish(m_chrono);
+    }
 }
 
 void ZoneCard::setHeat(bool on)

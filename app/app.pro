@@ -22,6 +22,9 @@ include($$ATN_SRC/version.pri)
 RESOURCES = $$ATN_SRC/resources.qrc
 
 SOURCES += \
+    $$ATN_SRC/chrono.cpp \
+    $$ATN_SRC/chronoeditor.cpp \
+    $$ATN_SRC/chronoview.cpp \
     $$ATN_SRC/configuration.cpp \
     $$ATN_SRC/logging.cpp \
     $$ATN_SRC/main.cpp \
@@ -46,6 +49,9 @@ SOURCES += \
     $$ATN_SRC/zonemodel.cpp
 
 HEADERS += \
+    $$ATN_SRC/chrono.h \
+    $$ATN_SRC/chronoeditor.h \
+    $$ATN_SRC/chronoview.h \
     $$ATN_SRC/climatezones.h \
     $$ATN_SRC/configuration.h \
     $$ATN_SRC/logging.h \

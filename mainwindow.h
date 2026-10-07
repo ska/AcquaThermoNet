@@ -3,11 +3,14 @@
 
 #include <QMainWindow>
 #include <QLabel>
+#include <QPushButton>
 #include <QVector>
 #include "common.h"
 #include "zonemodel.h"
 #include "mqtt.h"
 #include "zonecard.h"
+#include "chronoview.h"
+#include "chronoeditor.h"
 #include "netinfo.h"
 
 QT_BEGIN_NAMESPACE
@@ -27,6 +30,11 @@ public slots:
     void setNetworkInfo(const NetInfo::Info &info);
     void onModbusOnlineChanged(bool online);
     void onSerialPortChanged(bool open);
+    void showZones();
+    /* Chrono page: overview (zone -1) or one zone */
+    void showChrono(int zone = -1);
+    /* Chrono editor of zone i: Save / Cancel back to the chrono page */
+    void editChrono(int zone);
 
 private slots:
     void clientStateChanged( quint8 );
@@ -51,7 +59,25 @@ private:
 
     QVector<ZoneCard*>      m_cards;
 
+    /* Top bar: pages, day of the chrono page */
+    QPushButton             *m_zonesButton;
+    QPushButton             *m_chronoButton;
+    QPushButton             *m_dayPrev;
+    QPushButton             *m_dayNext;
+    QLabel                  *m_dayLabel;
+    QPushButton             *m_editButton;
+    QPushButton             *m_cancelButton;
+    QPushButton             *m_saveButton;
+    ChronoView              *m_chrono;
+    ChronoEditor            *m_editor;
+
+    enum Page { PageZones, PageChrono, PageEditor };
+
+    QWidget *createTopBar();
+    void updateTopBar();
+
     void updateStatusbar();
+    void setChronoLine(ZoneCard *card, const ZoneData &t);
     void updateClock();
     void setBarRow(int row, const QStringList &fields);
     static QString ago(qint64 ms);

@@ -117,16 +117,55 @@ private slots:
         Configuration conf(path);
         QCOMPARE(conf.statePath(), dir.filePath("state.ini"));
 
-        QMap<QString, double> sp;
-        sp.insert("a", 20.5);
+        QMap<QString, QPair<double, qint64>> sp;
+        sp.insert("a", qMakePair(20.5, qint64(2000000000)));
         conf.saveSetPoints(sp);
 
         /* state.ini overrides, setting.ini is never written */
         const QVector<ZoneData> z = conf.loadZones();
         QCOMPARE(z[0].setPoint, 20.5);
         QCOMPARE(z[1].setPoint, 19.0);
+        QCOMPARE(z[0].chronoDone, QDateTime::fromSecsSinceEpoch(2000000000));
+        QVERIFY(!z[1].chronoDone.isValid());
         QCOMPARE(QSettings(path, QSettings::IniFormat).value("ZONES/a/setpoint").toDouble(), 18.0);
         QCOMPARE(QSettings(conf.statePath(), QSettings::IniFormat).value("ZONES/a/setpoint").toDouble(), 20.5);
+
+        /* time unknown: no setpoint_at */
+        sp.insert("a", qMakePair(21.0, qint64(0)));
+        conf.saveSetPoints(sp);
+        QVERIFY(!QSettings(conf.statePath(), QSettings::IniFormat).contains("ZONES/a/setpoint_at"));
+        QVERIFY(!conf.loadZones()[0].chronoDone.isValid());
+    }
+
+    void chronoEditedInState()
+    {
+        QTemporaryDir dir;
+        Configuration conf(TestUtil::writeIni(dir,
+            "[CHRONO]\nholiday_days=sunday\na\\enabled=true\na\\weekday=06:30=20.5, 22:30=17\n"));
+        ChronoConfig c = conf.loadChrono("a");
+        QVERIFY(!c.edited);
+        QCOMPARE(c.weekday.size(), 2);
+
+        c.enabled = false;
+        c.weekday = Chrono::parseProfile({ "07:00=19" }, "test");
+        c.holiday = Chrono::parseProfile({ "09:00=20", "23:00=16.5" }, "test");
+        conf.saveChrono("a", c);
+        ChronoConfig s = conf.loadChrono("a");
+        QVERIFY(s.edited);
+        QVERIFY(!s.enabled);
+        QCOMPARE(Chrono::toString(s.weekday), QString("07:00=19.0"));
+        QCOMPARE(Chrono::toString(s.holiday), QString("09:00=20.0, 23:00=16.5"));
+        QCOMPARE(s.holidayDays, quint8(1 << 7));    /* still from setting.ini */
+
+        c.holiday.clear();
+        conf.saveChrono("a", c);
+        QVERIFY(conf.loadChrono("a").holiday.isEmpty());
+
+        conf.resetChrono("a");
+        s = conf.loadChrono("a");
+        QVERIFY(!s.edited);
+        QVERIFY(s.enabled);
+        QCOMPARE(s.weekday.size(), 2);
     }
 
     void ensureSettings()

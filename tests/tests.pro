@@ -14,6 +14,7 @@ include($$SRC/version.pri)
 
 SOURCES += \
     main.cpp \
+    tst_chrono.cpp \
     tst_config.cpp \
     tst_exercise.cpp \
     tst_frost.cpp \
@@ -27,6 +28,7 @@ SOURCES += \
     tst_regulation.cpp \
     tst_weather.cpp \
     tst_zonemodel.cpp \
+    $$SRC/chrono.cpp \
     $$SRC/configuration.cpp \
     $$SRC/logging.cpp \
     $$SRC/modbusframe.cpp \

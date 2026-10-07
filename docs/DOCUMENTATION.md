@@ -5,7 +5,7 @@ It reads room temperatures from MQTT sensors, drives the zone valves through
 a Modbus RTU relay board and appears in Home Assistant as one climate entity
 per zone. Alarms and status also go to Telegram.
 
-This document describes version **2.3.0**. The same content, with rendered
+This document describes version **2.4.0**. The same content, with rendered
 diagrams, is in [`AcquaThermoNet.html`](AcquaThermoNet.html). Telegram
 setup: [`TELEGRAM.md`](TELEGRAM.md). Deployment package:
 [`../tools/package/README.md`](../tools/package/README.md).
@@ -58,6 +58,10 @@ Main features:
 - on/off control with hysteresis per zone, minimum cycle time against short
   cycling, safe OFF when a sensor goes silent;
 - setpoints from the panel (+/−) or Home Assistant, kept across restarts;
+- chrono thermostat per zone: weekday and holiday profiles of up to 8
+  time slots, a manual change lasts until the next slot (§7.8), shown on
+  a chrono page of the panel with 15-minute bars and edited there
+  (§10.2) or on the RoomSense panel;
 - house mode from the RoomSense panel: windows open (8 °C for 30 min),
   away (15 °C until normal) or boost (25 °C for 30 min), the own
   setpoints restored afterwards (§7.7);
@@ -117,7 +121,8 @@ flowchart LR
 - The **BLE sensors** are read by **RoomSense**, a separate application in
   the house, which publishes one reading per zone on the broker; the
   application subscribes to them. The RoomSense panel also shows and sets
-  the setpoints, like Home Assistant, only through the broker.
+  the setpoints, the house mode and the chrono programs, only through the
+  broker.
 - **Home Assistant** shows and sets the zones only through the broker: it never
   talks to the panel directly, and the panel keeps regulating without it.
 - The **relay board** is the only actuator; the application is the only
@@ -178,7 +183,8 @@ flowchart TB
 | Class | Files | Role |
 |---|---|---|
 | `Configuration` | `configuration.*` | Reads `setting.ini` (never writes it), reads/writes `state.ini`, validates values |
-| `ZoneModel`, `ZoneData` | `zonemodel.*` | Zone state; setpoint rounding/clamping; debounced setpoint save |
+| `ZoneModel`, `ZoneData` | `zonemodel.*` | Zone state; setpoint rounding/clamping; debounced setpoint save; house mode; chrono slots applied |
+| `Chrono` | `chrono.*` | Pure chrono functions: profile parsing, slot in force, next change, intervals of a day |
 | `Mqtt` | `mqtt.*` | Broker connection (plain/TLS), LWT, discovery, commands, sensor data |
 | `MqttParse` | `mqttparse.*` | Pure topic/payload helpers (unit tested) |
 | `Termoregolazione` | `termoregolazione.*` | Regulation, relay ownership, feedback check, frost protection, shutdown |
@@ -190,7 +196,9 @@ flowchart TB
 | `TelegramBot` | `telegrambot.*` | `sendMessage` queue, `getUpdates` long polling, token redaction |
 | `TelegramNotifier` | `telegramnotifier.*` | Alarm transitions, reminders, command answers |
 | `RelayLog` | `relaylog.*` | Relay switch CSV, ON-time statistics |
-| `MainWindow`, `ZoneCard` | `mainwindow.*`, `zonecard.*` | GUI, one card per zone, status bar |
+| `MainWindow`, `ZoneCard` | `mainwindow.*`, `zonecard.*` | GUI, top bar (pages), one card per zone, status bar |
+| `ChronoView` | `chronoview.*` | Chrono page: day bar charts, all zones or one |
+| `ChronoEditor` | `chronoeditor.*` | Chrono editor of a zone: slots, profiles, on/off |
 | `WatchDog` | `watchdog.*` | `/dev/watchdog` keepalive, magic close |
 | `SingleInstance` | `singleinstance.*` | One instance per target (abstract Unix socket) |
 | `MonoClock` | `monoclock.*` | Monotonic time for every duration |
@@ -301,9 +309,14 @@ discovery.
 |---|---|---|---|---|
 | `AcquaThermoNet/status` | out | `online` / `offline` | yes | availability; `offline` also as LWT |
 | `homeassistant/climate/<zone>/config` | out | discovery JSON (5.3) | yes | at connect and when HA comes online |
+| `homeassistant/switch/<zone>_chrono/config` | out | discovery JSON (5.3) | yes | chrono switch of the zone, with the climate |
 | `AcquaThermoNet/<zone>/state_temp` | out | applied setpoint, e.g. `20` or `20.5` | yes | after every setpoint command, also when clamped; during a house mode the mode value (§7.7) |
 | `AcquaThermoNet/<zone>/state_mode` | out | `heat` / `off` | yes | heat demand of the zone |
 | `AcquaThermoNet/<zone>/set_temp` | in | number, e.g. `21.5` | – | rounded to 0.5, clamped to 5…25; from Home Assistant and the RoomSense panel |
+| `AcquaThermoNet/<zone>/chrono` | out | `{"chrono":"on","manual":false,"next_change":"22:30","next_change_at":"2026-10-03T22:30:00+02:00","next_setpoint":17,"paused":false,"profile":"weekday"}`; `{"chrono":"off"}` | yes | chrono of the zone (§7.8): state of the HA switch, attributes of the climate; sent when it changes (checked at every zone or mode change and every minute) |
+| `AcquaThermoNet/<zone>/chrono/set` | in | `on` / `off` | – | chrono on/off, from the HA switch and the RoomSense panel |
+| `AcquaThermoNet/<zone>/chrono/profile` | out | `{"edited":true,"enabled":true,"holiday":[],"holiday_days":[6,7],"weekday":[{"at":"06:30","temp":20.5},{"at":"22:30","temp":17}]}` | yes | chrono program of the zone, for the RoomSense panel; at connect, when it changes and after every `chrono/profile/set` |
+| `AcquaThermoNet/<zone>/chrono/profile/set` | in | the whole program `{"enabled":…,"weekday":[…],"holiday":[…]}` or `{"reset":true}` | – | from the RoomSense panel; strict: anything invalid refuses it (logged with the reason) |
 | `AcquaThermoNet/<zone>/set_mode` | in | `heat` / anything else = off | – | not advertised to HA, see §22 |
 | `AcquaThermoNet/mode/set` | in | `normal` / `window` / `away` / `boost` | – | house mode, from the RoomSense panel (§7.7) |
 | `AcquaThermoNet/mode/state` | out | `{"mode":"window","remaining_s":1740}` | yes | after every mode command, at every change, every minute while `window` or `boost` |
@@ -351,9 +364,49 @@ keys come out in alphabetical order):
 | `modes` | `modes` | `off`, `heat` |
 | `min_temp` / `max_temp` / `temp_step` | | 5 / 25 / 0.5 (`TEMP_MIN`, `TEMP_MAX`, `TEMP_STEP`) |
 
+The climate also has `"json_attr_t": "AcquaThermoNet/<zone>/chrono"`: the
+chrono state of the zone as attributes (below).
+
 The mode shown in HA is the **heat demand** (`heat` while the zone asks for
 heat, `off` when satisfied): HA cannot switch it, there is no
 `mode_command_topic`.
+
+**Chrono.** One `switch` per zone, `chrono.<zone>`, in the same device
+as its climate (same `identifiers`): it turns the chrono of the zone on
+and off (§7.8), as `Chrono ON/OFF` in the panel editor.
+
+```json
+{
+  "avty_t": "AcquaThermoNet/status",
+  "cmd_t": "AcquaThermoNet/salotto/chrono/set",
+  "device": { "identifiers": ["001122aabbcc_salotto"], "…": "as the climate" },
+  "icon": "mdi:calendar-clock",
+  "json_attr_t": "AcquaThermoNet/salotto/chrono",
+  "name": "chrono.salotto",
+  "pl_off": "off",
+  "pl_on": "on",
+  "stat_t": "AcquaThermoNet/salotto/chrono",
+  "uniq_id": "001122aabbcc_salotto_chrono",
+  "val_tpl": "{{ value_json.chrono }}"
+}
+```
+
+`AcquaThermoNet/<zone>/chrono`, state of the switch and attributes of
+switch and climate:
+
+| Field | |
+|---|---|
+| `chrono` | `on` / `off` (only this field when off) |
+| `paused` | `true` while the house is `away` (§7.8) |
+| `manual` | the setpoint is a manual change, until the next slot (card `manual → …`) |
+| `profile` | `weekday` / `holiday`, profile of today |
+| `next_change`, `next_change_at` | next slot, `HH:MM` and ISO 8601 with the UTC offset (automations) |
+| `next_setpoint` | setpoint of the next slot |
+
+`profile` and the next change are missing while the clock is not set.
+A command `on` for a zone with no weekday slot is refused (logged). `on`
+/ `off` is saved as a panel edit (`state.ini` `[CHRONO]`, §7.8). The
+profiles are edited on the panel only.
 
 **Outdoor weather.** The reading of the weather service (§11), the same
 the frost protection uses, as five `sensor` entities of one device
@@ -484,9 +537,16 @@ mosquitto_sub -h <broker> -u <user> -P <password> -v \
 mosquitto_pub -h <broker> -u <user> -P <password> \
   -t AcquaThermoNet/salotto/set_temp -m 21.5
 
-# house mode, as the RoomSense panel does (normal, window, away)
+# house mode, as the RoomSense panel does (normal, window, away, boost)
 mosquitto_pub -h <broker> -u <user> -P <password> \
   -t AcquaThermoNet/mode/set -m away
+
+# chrono program of a zone, as the RoomSense panel does, then back to setting.ini
+mosquitto_pub -h <broker> -u <user> -P <password> \
+  -t AcquaThermoNet/salotto/chrono/profile/set \
+  -m '{"enabled":true,"weekday":[{"at":"06:30","temp":20.5},{"at":"22:30","temp":17}],"holiday":[]}'
+mosquitto_pub -h <broker> -u <user> -P <password> \
+  -t AcquaThermoNet/salotto/chrono/profile/set -m '{"reset":true}'
 
 # simulate a sensor
 mosquitto_pub -h <broker> -u <user> -P <password> \
@@ -655,11 +715,14 @@ effectively one.
 
 ### 7.6 Setpoints
 
-- Changed from the panel (+/− buttons, 0.5 °C) or HA `set_temp`.
+- Changed from the panel (+/− buttons, 0.5 °C) or HA `set_temp`, and by
+  the chrono at the start of each slot (§7.8).
 - Rounded to 0.5 and clamped to 5…25 °C; the result is always republished on
   `state_temp`, so HA shows the value really used.
 - Written to `state.ini` 5 s after the last change (several taps = one flash
-  write) and at shutdown; `setting.ini` keeps only the initial value.
+  write) and at shutdown, with the time of the change (`setpoint_at`, for
+  the chrono after a restart); `setting.ini` keeps only the initial value.
+  Values set by the chrono are not written.
 - At start: `state.ini` value if present, otherwise `setting.ini`.
 - The regulation uses the **applied** setpoint (`ZoneData::target`): the
   zone's own one, or the house mode value (§7.7).
@@ -694,6 +757,77 @@ Chosen on the RoomSense panel for the whole house (contract:
 - The panel cards show `Window 8.0°` / `Away 15.0°` / `Boost 25.0°`
   instead of `Set …`; Telegram `/status` shows the mode (and the time
   left of window and boost).
+
+### 7.8 Chrono thermostat
+
+Optional, per zone (`[CHRONO]`, §16). Each zone has a **weekday** and a
+**holiday** profile of up to 8 slots `HH:MM=temp`: "from this time on,
+this setpoint". `holiday_days` (default Saturday and Sunday) chooses the
+days of the holiday profile; an empty holiday profile uses the weekday
+one. Before the first slot of a day the last slot of the previous day
+holds.
+
+```ini
+[CHRONO]
+holiday_days=saturday, sunday
+salotto\enabled=true
+salotto\weekday=06:30=20.5, 08:00=18, 17:00=20.5, 22:30=17
+salotto\holiday=08:00=20.5, 23:00=17
+```
+
+The chrono writes the zone's **own** setpoint (§7.6) only when a new slot
+begins; the house mode still applies on top of it (§7.7):
+
+```mermaid
+flowchart TB
+    T["every 30 s, at start, at the end of a house mode"] --> C{"clock set<br/>(year ≥ 2024)?"}
+    C -- no --> N["nothing"]
+    C -- yes --> M{"house mode"}
+    M -- "window / boost" --> D["deferred to the end of the mode"]
+    M -- away --> S["suspended"]
+    M -- normal --> Q{"slot in force began after<br/>the last one applied?"}
+    Q -- no --> K["setpoint kept<br/>(chrono or manual)"]
+    Q -- yes --> A["own setpoint = slot value<br/>state_temp published, not saved"]
+```
+
+- **Manual change** (panel, HA, RoomSense): lasts until the next slot.
+  The card shows `manual → 18:30` meanwhile.
+- **`window`, `boost`**: a slot that begins during the mode waits for its
+  end; at the end the chrono value applies only if a new slot began
+  meanwhile, otherwise the previous setpoint stays (also a manual one).
+  A manual change made during the mode is replaced if a slot began
+  during the mode.
+- **`away`**: chrono suspended; at the end the slot in force applies at
+  once, also if it began before.
+- **Restart**: the last manual setpoint stays unless a slot began after
+  its time (`state.ini` `<zone>\setpoint_at`); without a saved setpoint
+  or time, the slot in force applies at the first check.
+- **Clock**: nothing while the clock is not set (year before 2024). A
+  clock set back finds no slot newer than the last one applied: nothing
+  changes until the next one.
+- Values set by the chrono are **not written to flash**: after a restart
+  they are computed again.
+- **Home Assistant**: a switch per zone turns the chrono on and off; the
+  next change, `manual` and the profile of today are attributes of the
+  zone climate (§5.3).
+- **Edited on the panel** (§10.2) **or from RoomSense**
+  (`chrono/profile/set`, §5.2): the profiles and the on/off of the
+  zone are saved to `state.ini` `[CHRONO]` and from then on replace
+  those of `setting.ini` (`holiday_days` stays in `setting.ini`); `Reset`
+  goes back to `setting.ini`. After Save or Reset the slot in force
+  applies at once, also replacing a manual setpoint (during a house mode:
+  at its end, as above). The last change wins, from whichever panel; the
+  program is published on `<zone>/chrono/profile` (contract with
+  RoomSense: `SENSOR_GATEWAY_INTERFACE.md` §9).
+- Validation of `setting.ini`: slots with a wrong format or a temperature outside 5…25 °C,
+  duplicated times and slots beyond the eighth are skipped (logged);
+  temperatures are rounded to 0.5. `enabled=true` without a valid weekday
+  slot: chrono disabled (logged). A program from RoomSense is refused
+  whole instead.
+- Logs: the profiles of each zone at start, then `Zone salotto chrono:
+  22:30 slot, setpoint 17.0`; edits with their source (`chrono edited on
+  the panel`, `from Home Assistant`, `over MQTT`); at start `no new slot, setpoint 20.0 kept`
+  when the manual value stays.
 
 ---
 
@@ -748,10 +882,16 @@ relays **idle for `idle_days`** are cycled ON/OFF.
 
 ## 10. User interface
 
+Two pages, chosen in the top bar: **Zones** (the cards, §10.1) and
+**Chrono** (§10.2). The status bar stays at the bottom of both.
+
+### 10.1 Zones
+
 ![GUI](images/gui.png)
 
 *Rendered by `tools/guishot` with one zone per state: pending switch,
-battery low, frost mode, relay fault, waiting for data.*
+battery low, frost mode, relay fault, waiting for data; the second zone
+with a manual setpoint while its chrono runs.*
 
 Each card, top to bottom:
 
@@ -764,6 +904,7 @@ Each card, top to bottom:
 | Hum / Batt | humidity and battery of the sensor |
 | status line | the most important condition (below); red with red border for alarms |
 | Set | setpoint (`Window` / `Away` and the applied value during a house mode, §7.7) |
+| chrono line | clock icon and next chrono change, e.g. `22:30 → 17.0°`; orange `manual → 22:30` while a manual setpoint holds; `chrono paused` while away; blank if the zone has no chrono (§7.8) |
 | − / + | setpoint −/+ 0.5 °C |
 
 Status line, by priority:
@@ -779,6 +920,51 @@ Status line, by priority:
 | `switch ON/OFF in <t>` | no | switch waiting for the min cycle |
 | `no relay - updated <age>` | no | zone without relay |
 | `updated <age>` | no | normal |
+
+### 10.2 Chrono
+
+![Chrono page](images/gui-chrono.png)
+
+One row per zone with its day, one bar every 15 minutes: height and
+color give the setpoint (blue cold, amber, red comfort; same scale for
+all the zones). The profile of the day is under the name (`weekday` /
+`holiday`); the past part of today is dimmed and a dashed line marks the
+time. On the right, the chrono setpoint now and the next change (other
+days: the lowest and highest setpoint of the day); `chrono off` and the
+setpoint for a zone without chrono. `‹` `›` in the top bar move from
+today up to 6 days ahead.
+
+A tap on a row shows that zone with scales in °C and hours and the value
+of each slot; the tabs on the left change zone, `‹ All zones` (or the
+`Chrono` button) goes back to the overview.
+
+![Chrono, one zone](images/gui-chrono-zone.png)
+
+The page shows the chrono profiles; manual setpoints and house modes are
+on the zone cards. Every 30 s it is repainted (the time line).
+
+**Editor.** On one zone, `Edit` in the top bar opens its editor, on the
+profile of the day shown:
+
+![Chrono editor](images/gui-chrono-edit.png)
+
+- `Weekday` / `Holiday`: the profile edited; the chart above shows it
+  (an empty holiday profile shows the weekday one, dimmed).
+- One row per slot: time −/+ by 15 minutes (never past the slots
+  around it, so the order stays), setpoint −/+ by 0.5 °C (5…25), `×`
+  removes the slot (the weekday profile keeps one at least). Keep a −/+
+  pressed to repeat.
+- `+ Slot`: one hour after the last slot, else in the middle of the
+  longest gap, with the setpoint of the slot before; 8 slots at most.
+- `Copy to holiday` (weekday) copies the weekday profile to the holiday
+  one; `Use weekday` (holiday) empties the holiday profile.
+- `Chrono ON/OFF`: the chrono of the zone.
+- `Reset`: back to the profiles of `setting.ini` at once (enabled only
+  after a panel edit).
+- `Save` saves to `state.ini` and applies (§7.8); `Cancel` drops the
+  changes. Zones and Chrono are disabled meanwhile.
+
+### 10.3 Status bar
 
 Status bar, two rows of fields with the `|` separators aligned in columns:
 
@@ -999,6 +1185,19 @@ House mode from the RoomSense panel (§7.7).
 | `boost_temp` | 25 | °C, 5…25: boost, every zone at max(own, boost_temp) |
 | `boost_min` | 30 | 1…1440: then back to normal |
 
+### [CHRONO]
+
+Chrono thermostat (§7.8). Once a zone is edited on the panel, its
+`enabled`, `weekday` and `holiday` come from `state.ini` (§16, state.ini)
+until `Reset`.
+
+| Key | Default | |
+|---|---|---|
+| `holiday_days` | `saturday, sunday` | days of the holiday profile, as `[VALVE_EXERCISE] day`; empty: none |
+| `<zone>\enabled` | `false` | |
+| `<zone>\weekday` | – | up to 8 `HH:MM=temp` slots, comma separated (also `HH:MM temp`); temp 5…25 |
+| `<zone>\holiday` | – (weekday) | same format, the holiday days |
+
 ### [FROST_PROTECTION]
 
 | Key | Default | |
@@ -1079,6 +1278,11 @@ salotto\relaynum=5
 camera\relaynum=4
 bagno\relaynum=1
 
+[CHRONO]
+salotto\enabled=true
+salotto\weekday=06:30=20.5, 08:00=18, 17:00=20.5, 22:30=17
+salotto\holiday=08:00=20.5, 23:00=17
+
 [SERIAL]
 ; device dependent
 port=/dev/ttyS1
@@ -1111,6 +1315,8 @@ name=Casa
 |---|---|
 | `[MQTT] unique_id` | generated id, kept so HA entities survive MAC changes |
 | `[ZONES] <zone>\setpoint` | last setpoint, overrides `setting.ini` |
+| `[CHRONO] <zone>\enabled`, `weekday`, `holiday` | chrono edited on the panel: replaces `setting.ini` (removed by `Reset`) |
+| `[ZONES] <zone>\setpoint_at` | epoch of that change: the chrono keeps it after a restart until a slot begins after it |
 | `[RELAYS] <n>\last_on` | epoch of the last activation (valve exercise) |
 | `[MODE] house` | house mode: `normal`, `window`, `away`, `boost` (§7.7) |
 | `[MODE] until` | end of `window` / `boost`, epoch: resumed after a restart |
@@ -1149,6 +1355,9 @@ The working directory is `deploy/` (`start.sh` changes to it):
 ---
 
 ## 18. Build
+
+Quick reference for building, testing and packaging:
+[`BUILD.md`](BUILD.md).
 
 ### 18.1 Toolchains
 
@@ -1220,12 +1429,12 @@ generated `version.h`):
 
 | Build | Version |
 |---|---|
-| exactly at tag `v2.3.0` | `2.3.0` |
-| commits after the tag | `2.3.0-<short hash>` |
+| exactly at tag `v2.4.0` | `2.4.0` |
+| commits after the tag | `2.4.0-<short hash>` |
 | no git / no tag | `0.0.0` |
 
-Banner: `AcquaThermoNet v2.3.0 (git 1a2b3c4, built 2026-10-02 09:30:00 UTC)`
-(`-dirty` with uncommitted changes). Release: `git tag -a v2.3.0 -m v2.3.0`,
+Banner: `AcquaThermoNet v2.4.0 (git 1a2b3c4, built 2026-10-07 09:30:00 UTC)`
+(`-dirty` with uncommitted changes). Release: `git tag -a v2.4.0 -m v2.4.0`,
 then rerun qmake.
 
 ### 18.5 OpenSSL on the desktop
@@ -1277,19 +1486,23 @@ first start; edit it (broker, zones, relays, serial port) and restart.
 
 ## 20. Testing and simulators
 
+What every test checks: [`TESTING.md`](TESTING.md).
+
 ### 20.1 Unit tests
 
-QtTest, no hardware or broker needed, 12 suites (~95 test functions):
+QtTest, no hardware or broker needed, 14 suites (about 140 test functions):
 
 | Suite | Covers |
 |---|---|
-| `tst_config` | ini parsing, defaults, invalid values, state.ini |
-| `tst_zonemodel` | setpoint rounding/clamping, debounced save, signals, house modes |
+| `tst_config` | ini parsing, defaults, invalid values, state.ini (setpoints, chrono edited on the panel) |
+| `tst_chrono` | slot in force and next change (midnight, profile switch, DST), day intervals, profile parsing, editing steps, `[CHRONO]` |
+| `tst_zonemodel` | setpoint rounding/clamping, debounced save, signals, house modes, chrono applied (manual, modes, restart, clock) |
 | `tst_regulation` | hysteresis, min cycle, sensor timeout, relay feedback, shutdown |
 | `tst_frost` | frost conditions and cycle |
 | `tst_exercise` | valve exercise schedule and sequence |
 | `tst_modbus` | frames, CRC, online/offline |
-| `tst_mqttparse` | topic matching, sensor JSON |
+| `tst_mqttparse` | topic matching, sensor JSON, weather, chrono state, program and commands, switch discovery |
+| `tst_netinfo` | network row of the GUI (interface, IP, MAC) |
 | `tst_weather` | wttr.in / met.no parsing, HTTP dates |
 | `tst_telegram` | alarm transitions, commands, texts |
 | `tst_relaylog` | CSV, monthly files, ON-time sums |
@@ -1306,7 +1519,7 @@ qmake ../AcquaThermoNet.pro CONFIG+=tests && make -j4 && ./tests/tests
 
 `tools/e2e.sh <build>/bin_x86_64/AcquaThermoNet` runs the real application
 (offscreen) against three local simulators and checks startup, regulation,
-setpoint clamp, shutdown, state files, logs, relay log and Telegram (the
+setpoint clamp, chrono (slot applied, HA switch and state, program from MQTT), shutdown, state files, logs, relay log and Telegram (the
 token must never appear in the logs). No other instance may be running.
 
 | Simulator | |
@@ -1320,9 +1533,14 @@ token must never appear in the logs). No other instance may be running.
 ```sh
 qmake ../AcquaThermoNet.pro CONFIG+=tools && make -j4
 QT_QPA_PLATFORM=offscreen tools/guishot/guishot setting.ini gui.png
+QT_QPA_PLATFORM=offscreen tools/guishot/guishot setting.ini gui-chrono.png chrono
+QT_QPA_PLATFORM=offscreen tools/guishot/guishot setting.ini gui-chrono-zone.png chrono=1
+QT_QPA_PLATFORM=offscreen tools/guishot/guishot setting.ini gui-chrono-edit.png edit=0
 ```
 
-Needs an ini with at least 5 zones (the image in §10).
+Needs an ini with at least 5 zones (the images in §10); `chrono` shows
+the chrono page, `chrono=N` zone N (from 0), `edit=N` the chrono editor
+of zone N, with the `[CHRONO]` profiles of the ini.
 
 ---
 
@@ -1363,38 +1581,14 @@ Needs an ini with at least 5 zones (the image in §10).
   model string is fixed (`AcquaThermoNet Ver 0.1`).
 - UI, log and Telegram texts are English only; `tr()` translation planned.
 - To verify on the real device: CA certificates for TLS/HTTPS, JMLauncher
-  handling of versions like `2.3.0-<hash>`, `background` flag, serial port
+  handling of versions like `2.4.0-<hash>`, `background` flag, serial port
   reopen after `kill -9`.
 - Qt 6 port postponed.
 
 ### Planned
 
-**2.4.0: chrono thermostat, per zone.**
-
-- Two profiles per zone, weekday and holiday, up to 8 `HH:MM=temp` slots
-  each, in `setting.ini`:
-
-  ```ini
-  [CHRONO]
-  holiday_days=saturday, sunday
-  salotto\enabled=true
-  salotto\weekday=06:30=20.5, 08:00=18, 17:00=20.5, 22:30=17
-  salotto\holiday=08:00=20.5, 23:00=17
-  ```
-
-  An empty holiday profile uses the weekday one; before the first slot of
-  the day the last slot of the previous day holds.
-- The chrono writes the zone's own setpoint only when a new slot begins: a
-  manual change (panel, HA, RoomSense) lasts until the next slot.
-- `window`, `boost`: a slot change waits for the end of the mode; at the
-  end the chrono value applies only if a new slot began meanwhile,
-  otherwise the previous setpoint stays.
-- `away`: chrono suspended; at the end the current slot applies at once.
-- Restart: the last manual setpoint and its time (`state.ini`
-  `<zone>\setpoint_at`) stay unless a slot began after it. Values set by
-  the chrono are not written to flash.
-- Zone card: next change (e.g. `22:30 → 17.0°`), `chrono paused` while
-  away.
-
-Later steps: chrono editor in the GUI and from Home Assistant, then from
-the RoomSense panel (new interface section).
+Chrono thermostat, next steps: an alternative panel editor with one
+slot selected on a large chart and large −/+ buttons (time, setpoint),
+previous/next slot, add (splitting the selected slot) and delete; maybe
+the chrono in Telegram `/status`. The house mode in Home Assistant
+(`preset_mode` of the climate: away, boost) is still free for it.

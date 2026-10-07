@@ -24,6 +24,9 @@ public:
     void setStatus(const QString &text, bool alarm);
     void setHeat(bool on);
     void setRelay(int state);           /* -1 unknown, 0 off, 1 on */
+    /* Chrono line under the setpoint, blank if empty; manual: the
+     * setpoint differs from the chrono one */
+    void setChrono(const QString &text, bool manual);
 
 signals:
     void minusClicked();
@@ -35,6 +38,7 @@ private:
     QLabel      *m_info;
     QLabel      *m_setPoint;
     QLabel      *m_status;
+    QLabel      *m_chrono;
     QLabel      *m_heatIcon;
     QLabel      *m_relayIcon;
     QPushButton *m_minus;

@@ -18,7 +18,12 @@ ZoneModel::ZoneModel(Configuration *conf, int saveDelayMs, QObject *parent) :
         z.setPoint = normalizeSetPoint(z.setPoint);
 
     for(const ZoneData &z : m_zones)
+    {
         qCInfo(lcConfig).noquote() << "Zone" << z.name << "relay" << z.relay << "setpoint" << z.setPoint;
+        if(z.chrono.enabled)
+            qCInfo(lcConfig).noquote() << "Zone" << z.name << "chrono weekday:" << Chrono::toString(z.chrono.weekday)
+                                       << " holiday:" << (z.chrono.holiday.isEmpty() ? "as weekday" : Chrono::toString(z.chrono.holiday));
+    }
 
     m_saveTimer = new QTimer(this);
     m_saveTimer->setSingleShot(true);
@@ -65,6 +70,68 @@ ZoneModel::ZoneModel(Configuration *conf, int saveDelayMs, QObject *parent) :
     }
     for(int i = 0; i < m_zones.size(); i++)
         updateTarget(i);
+
+    /* Chrono: first check once the application is running (signals
+     * connected), then periodically */
+    QTimer *chronoTimer = new QTimer(this);
+    connect(chronoTimer, &QTimer::timeout, this, [this] { checkChrono(QDateTime::currentDateTime()); });
+    chronoTimer->start(CHRONO_CHECK_MS);
+    QTimer::singleShot(0, this, [this] { checkChrono(QDateTime::currentDateTime()); });
+}
+
+/**
+ * @brief ZoneModel::checkChrono
+ * A slot that began after chronoDone (last slot applied, or the time of
+ * the manual setpoint saved before a restart) sets the zone's setpoint.
+ * A manual change leaves chronoDone: it lasts until the next slot. A
+ * clock set back finds no slot after chronoDone: nothing changes.
+ * @param now   local time
+ */
+void ZoneModel::checkChrono(const QDateTime &now)
+{
+    const bool first = !m_chronoStarted;
+    m_chronoStarted = true;
+    if(!clockValid(now))
+    {
+        if(first)
+            qCInfo(lcConfig) << "Chrono waits for the clock to be set";
+        return;
+    }
+    if(m_mode != ModeNormal)
+    {
+        if(first)
+            qCInfo(lcConfig).noquote() << "Chrono" << (m_mode == ModeAway ? "suspended" : "deferred")
+                                       << "by house mode" << modeName(m_mode);
+        return;
+    }
+
+    for(int i = 0; i < m_zones.size(); i++)
+    {
+        ZoneData &z = m_zones[i];
+        if(!z.chrono.enabled)
+            continue;
+        const ChronoPoint cur = Chrono::current(now, z.chrono);
+        if(z.chronoDone.isValid() && cur.start <= z.chronoDone)
+        {
+            if(first)
+                qCInfo(lcConfig).noquote() << QString("Zone %1 chrono: no new slot, setpoint %2 kept")
+                                              .arg(z.name).arg(z.setPoint, 0, 'f', 1);
+            continue;
+        }
+
+        z.chronoDone = cur.start;
+        /* the chrono value is not saved: a pending manual one is replaced */
+        m_unsaved.remove(i);
+        const double temp = normalizeSetPoint(cur.temp);
+        qCInfo(lcConfig).noquote() << QString("Zone %1 chrono: %2 slot, setpoint %3")
+                                      .arg(z.name, cur.start.toString("HH:mm")).arg(temp, 0, 'f', 1);
+        if(temp == z.setPoint)
+            continue;
+        z.setPoint = temp;
+        updateTarget(i);
+        emit zoneChanged(i);
+        emit setPointChanged(i);
+    }
 }
 
 QString ZoneModel::modeName(HouseMode mode)
@@ -178,6 +245,12 @@ bool ZoneModel::setHouseMode(HouseMode mode)
     }
 
     qCInfo(lcConfig).noquote() << "House mode" << modeName(m_mode) << "->" << modeName(mode);
+    /* end of away: the current slot applies, even if it began before */
+    if(m_mode == ModeAway)
+    {
+        for(ZoneData &z : m_zones)
+            z.chronoDone = QDateTime();
+    }
     m_mode = mode;
     saveMode(lengthS);
     for(int i = 0; i < m_zones.size(); i++)
@@ -186,6 +259,9 @@ bool ZoneModel::setHouseMode(HouseMode mode)
         emit zoneChanged(i);
         emit setPointChanged(i);            /* regulation, state_temp */
     }
+    /* back to normal: a slot begun during window or boost (or the current
+     * one after away) applies now */
+    checkChrono(QDateTime::currentDateTime());
     emit houseModeChanged();
     return true;
 }
@@ -207,6 +283,57 @@ void ZoneModel::updateTarget(int i)
 }
 
 /**
+ * @brief ZoneModel::setChrono
+ * Profiles and on/off edited on the panel; holiday days stay those of
+ * setting.ini
+ */
+void ZoneModel::setChrono(int i, const ChronoConfig &config, const QString &source)
+{
+    if(!isValid(i))
+        return;
+    ZoneData &z = m_zones[i];
+    const quint8 holidayDays = z.chrono.holidayDays;
+    z.chrono = config;
+    z.chrono.holidayDays = holidayDays;
+    z.chrono.edited = true;
+    if(z.chrono.weekday.isEmpty())
+        z.chrono.enabled = false;
+    m_conf->saveChrono(z.name, z.chrono);
+    qCInfo(lcConfig).noquote() << "Zone" << z.name << "chrono edited" << source + ":"
+                               << (z.chrono.enabled ? "on" : "off") << " weekday:" << Chrono::toString(z.chrono.weekday)
+                               << " holiday:" << (z.chrono.holiday.isEmpty() ? "as weekday" : Chrono::toString(z.chrono.holiday));
+    chronoReplaced(i);
+}
+
+void ZoneModel::resetChrono(int i, const QString &source)
+{
+    if(!isValid(i))
+        return;
+    ZoneData &z = m_zones[i];
+    m_conf->resetChrono(z.name);
+    z.chrono = m_conf->loadChrono(z.name);
+    qCInfo(lcConfig).noquote() << "Zone" << z.name << "chrono back to setting.ini" << source + ":" << (z.chrono.enabled ? "on" : "off");
+    chronoReplaced(i);
+}
+
+bool ZoneModel::chronoManual(int i, const QDateTime &now) const
+{
+    if(!isValid(i) || m_mode != ModeNormal || !clockValid(now))
+        return false;
+    const ZoneData &z = m_zones[i];
+    return z.chrono.enabled && z.setPoint != Chrono::current(now, z.chrono).temp;
+}
+
+/* New profiles: the slot in force applies now (or at the end of the house
+ * mode), even if it began before, replacing a manual setpoint */
+void ZoneModel::chronoReplaced(int i)
+{
+    m_zones[i].chronoDone = QDateTime();
+    emit zoneChanged(i);
+    checkChrono(QDateTime::currentDateTime());
+}
+
+/**
  * @brief ZoneModel::flushPendingSaves
  * Write the changed setpoints now (also call it on exit)
  */
@@ -216,9 +343,13 @@ void ZoneModel::flushPendingSaves()
     if(m_unsaved.isEmpty())
         return;
 
-    QMap<QString, double> setpoints;
+    /* time of the change (within the save delay): the chrono keeps the
+     * value after a restart until a slot begins after it */
+    const QDateTime now = QDateTime::currentDateTime();
+    const qint64 atS = clockValid(now) ? now.toSecsSinceEpoch() : 0;
+    QMap<QString, QPair<double, qint64>> setpoints;
     for(int i : m_unsaved)
-        setpoints.insert(m_zones[i].name, m_zones[i].setPoint);
+        setpoints.insert(m_zones[i].name, qMakePair(m_zones[i].setPoint, atS));
     m_unsaved.clear();
     m_conf->saveSetPoints(setpoints);
 }

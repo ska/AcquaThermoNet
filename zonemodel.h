@@ -8,6 +8,7 @@
 #include <QDateTime>
 #include "common.h"
 #include "climatezones.h"
+#include "chrono.h"
 
 class Configuration;
 
@@ -19,6 +20,9 @@ struct ZoneData
     int     relay       = 0;            /* 1..RELAY_NUM_MAX, 0 = no relay */
     double  setPoint    = TEMP_DEFAULT;    /* the zone's own, kept during a house mode */
     double  target      = TEMP_DEFAULT;    /* applied: setPoint, or min(setPoint, mode value) */
+    ChronoConfig chrono;                /* [CHRONO] profiles */
+    QDateTime chronoDone;               /* start of the last slot applied, or of the last
+                                         * manual setpoint after a restart; invalid: none */
     /* Regulation state */
     bool    heat        = false;        /* heat demand */
     int     relayState  = -1;           /* read back from the board: -1 unknown, 0 off, 1 on */
@@ -58,6 +62,8 @@ class ZoneModel : public QObject
 public:
     /* Setpoints are written to flash this long after the last change */
     static const int SAVE_DELAY_MS = 5000;
+    /* Chrono checked this often for a new slot */
+    static const int CHRONO_CHECK_MS = 30 * 1000;
 
     /* House mode, for all the zones (interface §8) */
     enum HouseMode { ModeNormal, ModeWindow, ModeAway, ModeBoost };
@@ -97,9 +103,22 @@ public:
     void setValveExercise(int i, bool active);
     void setFrostProtection(int i, bool active);
     void setPendingSwitch(int i, int target, qint64 atMs);
+    /* Chrono edited (saved to state.ini), or back to the profiles of
+     * setting.ini; the slot in force applies at once. source names who
+     * changed it in the log ("on the panel", "from Home Assistant", …) */
+    void setChrono(int i, const ChronoConfig &config, const QString &source = "on the panel");
+    /* Chrono on and the own setpoint is not the one of the slot in force:
+     * a manual change, until the next slot (normal mode, clock set) */
+    bool chronoManual(int i, const QDateTime &now) const;
+    void resetChrono(int i, const QString &source = "on the panel");
 
 public slots:
     void flushPendingSaves();
+    /* Chrono: a slot begun since the last one applied sets the zone's own
+     * setpoint (not saved to flash). Normal mode only: window and boost
+     * defer it to their end, away suspends it. Nothing while the clock is
+     * not set. Called by a timer and at the mode changes; tests pass now. */
+    void checkChrono(const QDateTime &now);
 
 signals:
     void zoneChanged(int i);            /* any change, for the GUI */
@@ -117,8 +136,10 @@ private:
     HouseMode           m_mode;
     ModeConfig          m_modeConfig;
     QTimer              *m_modeTimer;       /* end of window or boost */
+    bool                m_chronoStarted = false;    /* first check done (logs at start) */
 
     void updateTarget(int i);
+    void chronoReplaced(int i);
     int durationS(HouseMode mode) const;
     void saveMode(int durationS);
 

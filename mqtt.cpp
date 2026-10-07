@@ -89,6 +89,20 @@ Mqtt::Mqtt(const mqtt_brk_t &broker, const QString &uniqueId, ZoneModel *zones, 
     });
     m_houseModeTimer->start(60 * 1000);
 
+    /* Chrono state for HA: on zone and mode changes, and every minute
+     * (a slot with the same setpoint changes only the next change) */
+    m_chronoSent.resize(m_zones->count());
+    auto publishAllChrono = [this] {
+        for(int zone = 0; zone < m_zones->count(); zone++)
+            publishChrono(zone);
+    };
+    connect(m_zones, &ZoneModel::zoneChanged, this, &Mqtt::publishChrono);
+    connect(m_zones, &ZoneModel::houseModeChanged, this, publishAllChrono);
+    connect(m_houseModeTimer, &QTimer::timeout, this, publishAllChrono);
+    /* Chrono program for RoomSense: when it changes */
+    m_profileSent.resize(m_zones->count());
+    connect(m_zones, &ZoneModel::zoneChanged, this, &Mqtt::publishChronoProfile);
+
     connectToBroker();
 }
 
@@ -415,6 +429,57 @@ void Mqtt::messageReceivedSlot(const QByteArray &message, const QMqttTopicName &
         return;
     }
 
+    //AcquaThermoNet/ZONA/chrono/set: on/off, state republished
+    if( MqttParse::matchZoneTopic(topicName, BASE_TOPIC, TAIL_CHRONO_SET, zoneName) )
+    {
+        zone = m_zones->indexOf(zoneName);
+        if( zone < 0 )
+            return;
+
+        bool on;
+        if( !MqttParse::parseOnOff(message, on) )
+            qCWarning(lcMqtt) << "Invalid chrono command for zone" << zoneName << ":" << message;
+        else if( on != m_zones->zone(zone).chrono.enabled )
+        {
+            ChronoConfig c = m_zones->zone(zone).chrono;
+            c.enabled = on;
+            if( on && c.weekday.isEmpty() )
+                qCWarning(lcMqtt) << "Chrono of zone" << zoneName << "has no weekday slot: stays off";
+            else
+                m_zones->setChrono(zone, c, "from Home Assistant");
+        }
+        m_chronoSent[zone].clear();
+        publishChrono(zone);
+        return;
+    }
+
+    //AcquaThermoNet/ZONA/chrono/profile/set: whole program or reset (RoomSense
+    //panel), program republished after every command, also when refused
+    if( MqttParse::matchZoneTopic(topicName, BASE_TOPIC, TAIL_CHRONO_PROFILE_SET, zoneName) )
+    {
+        zone = m_zones->indexOf(zoneName);
+        if( zone < 0 )
+            return;
+
+        const QByteArray before = m_profileSent[zone];
+        ChronoConfig c = m_zones->zone(zone).chrono;
+        bool reset;
+        QString error;
+        if( !MqttParse::chronoProgram(message, c, reset, &error) )
+            qCWarning(lcMqtt).noquote() << "Invalid chrono program for zone" << zoneName << ":" << error;
+        else if( reset )
+            m_zones->resetChrono(zone, "over MQTT");
+        else
+            m_zones->setChrono(zone, c, "over MQTT");
+        /* not sent yet by the zone change: same program again */
+        if( m_profileSent[zone] == before )
+        {
+            m_profileSent[zone].clear();
+            publishChronoProfile(zone);
+        }
+        return;
+    }
+
     //AcquaThermoNet/ZONA/set_mode
     if( MqttParse::matchZoneTopic(topicName, BASE_TOPIC, TAIL_SET_MODE, zoneName) )
     {
@@ -487,22 +552,22 @@ void Mqtt::MqttHomeAssistantDiscovery()
         modesArray.push_back("off");
         modesArray.push_back("heat");
         payload.insert("modes", modesArray);
-
-        QJsonObject device;
-        device.insert("name", "AcquaThermoNet");
-        device.insert("model", "AcquaThermoNet Ver 0.1");
-        device.insert("manufacturer", "Luigi Scagnet");
-
-        QJsonArray identifiersArray;
-        identifiersArray.push_back(m_uniqueId +"_"+ name);
-        device.insert("identifiers", identifiersArray);
-        payload.insert("device", device);
+        /* chrono: next change, manual, profile as attributes */
+        payload.insert("json_attr_t",   zoneTopic(zone) + "/" TAIL_CHRONO);
+        payload.insert("device",        MqttParse::zoneDevice(m_uniqueId, name));
 
         QJsonDocument doc(payload);
         m_client->publish(tn, doc.toJson(QJsonDocument::Compact), 1, true);
 
+        const MqttParse::Message sw = MqttParse::chronoSwitchDiscovery(m_uniqueId, name);
+        m_client->publish(QMqttTopicName(sw.topic), sw.payload, 1, true);
+
         publishMode(zone);
         publishSetPoint(zone);
+        m_chronoSent[zone].clear();
+        publishChrono(zone);
+        m_profileSent[zone].clear();
+        publishChronoProfile(zone);
     }
     publishHouseMode();
 
@@ -585,4 +650,38 @@ void Mqtt::publishHouseMode()
     if( mode == ZoneModel::ModeWindow || mode == ZoneModel::ModeBoost )
         payload.insert("remaining_s", m_zones->remainingS());
     m_client->publish(QMqttTopicName(MODE_STATE_TOPIC), QJsonDocument(payload).toJson(QJsonDocument::Compact), 1, true);
+}
+
+/**
+ * @brief Mqtt::publishChrono
+ * <zone>/chrono (retained): chrono switch state and climate attributes,
+ * sent only when it changes
+ */
+void Mqtt::publishChrono(int zone)
+{
+    if( zone < 0 || zone >= m_chronoSent.size() || m_client->state() != QMqttClient::Connected )
+        return;
+    const QDateTime now = QDateTime::currentDateTime();
+    const QByteArray payload = MqttParse::chronoState(m_zones->zone(zone), m_zones->houseMode() == ZoneModel::ModeAway,
+                                                      m_zones->chronoManual(zone, now), now);
+    if( payload == m_chronoSent[zone] )
+        return;
+    m_chronoSent[zone] = payload;
+    m_client->publish(QMqttTopicName(zoneTopic(zone) + "/" TAIL_CHRONO), payload, 1, true);
+}
+
+/**
+ * @brief Mqtt::publishChronoProfile
+ * <zone>/chrono/profile (retained): the chrono program, for the RoomSense
+ * panel (interface §9), sent only when it changes
+ */
+void Mqtt::publishChronoProfile(int zone)
+{
+    if( zone < 0 || zone >= m_profileSent.size() || m_client->state() != QMqttClient::Connected )
+        return;
+    const QByteArray payload = MqttParse::chronoProfile(m_zones->zone(zone).chrono);
+    if( payload == m_profileSent[zone] )
+        return;
+    m_profileSent[zone] = payload;
+    m_client->publish(QMqttTopicName(zoneTopic(zone) + "/" TAIL_CHRONO_PROFILE), payload, 1, true);
 }

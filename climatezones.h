@@ -22,6 +22,10 @@
 #define TAIL_SET_MODE               "set_mode"
 #define TAIL_STATE_TEMP             "state_temp"
 #define TAIL_STATE_MODE             "state_mode"
+#define TAIL_CHRONO                 "chrono"
+#define TAIL_CHRONO_SET             "chrono/set"
+#define TAIL_CHRONO_PROFILE         "chrono/profile"
+#define TAIL_CHRONO_PROFILE_SET     "chrono/profile/set"
 
 #define STATUS_TOPIC                BASE_TOPIC "/status"
 /* House mode (interface §8): "mode" is never a zone name */

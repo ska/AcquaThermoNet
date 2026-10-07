@@ -1,8 +1,11 @@
 /*
  * GUI screenshot: the real MainWindow with one zone per card state
  * (heating with pending switch, battery low, sensor lost with frost
- * protection, relay fault, waiting for data). Usage: guishot SETTING_INI OUTPUT_PNG
- * The ini needs at least 5 zones; MQTT is pointed to an unused port.
+ * protection, relay fault, waiting for data). Usage:
+ *   guishot SETTING_INI OUTPUT_PNG [chrono[=ZONE] | edit=ZONE]
+ * chrono: the chrono page instead, overview or zone index ZONE ([CHRONO]
+ * profiles from the ini); edit: the chrono editor of zone ZONE. The ini needs at least 5 zones; MQTT is pointed
+ * to an unused port.
  */
 #include <QApplication>
 #include "monoclock.h"
@@ -25,7 +28,7 @@ int main(int argc, char *argv[])
 {
     if(argc < 3)
     {
-        fprintf(stderr, "usage: %s SETTING_INI OUTPUT_PNG\n", argv[0]);
+        fprintf(stderr, "usage: %s SETTING_INI OUTPUT_PNG [chrono[=ZONE] | edit=ZONE]\n", argv[0]);
         return 2;
     }
 
@@ -74,6 +77,12 @@ int main(int argc, char *argv[])
     wi.press = 1015;
     w.weatherInfoIsChanged(wi);
 
+    const QString page = argc > 3 ? QString(argv[3]) : QString();
+    if(page.startsWith("chrono"))
+        w.showChrono(page.startsWith("chrono=") ? page.mid(7).toInt() : -1);
+    else if(page.startsWith("edit="))
+        w.editChrono(page.mid(5).toInt());
+
     w.show();
     QTimer::singleShot(800, [&] {
         /* Sample network identity: never the one of the build machine */
@@ -85,6 +94,9 @@ int main(int argc, char *argv[])
         /* MQTT state changes would refresh it with the real interfaces */
         QObject::disconnect(&mq, nullptr, &w, nullptr);
         w.setNetworkInfo(net);
+        /* after the first chrono check: a manual setpoint on zone 1 */
+        if(zones.zone(1).chrono.enabled)
+            zones.stepSetPoint(1, +2);
         /* let the layout adapt to the new texts before the capture */
         QTimer::singleShot(200, [&] {
             w.grab().save(argv[2]);

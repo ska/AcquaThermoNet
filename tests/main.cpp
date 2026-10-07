@@ -2,6 +2,7 @@
 #include <QTest>
 #include <cstdio>
 
+int runChronoTests(int argc, char *argv[]);
 int runConfigTests(int argc, char *argv[]);
 int runExerciseTests(int argc, char *argv[]);
 int runFrostTests(int argc, char *argv[]);
@@ -26,6 +27,7 @@ int main(int argc, char *argv[])
     failed += runMqttParseTests(argc, argv);
     failed += runNetInfoTests(argc, argv);
     failed += runConfigTests(argc, argv);
+    failed += runChronoTests(argc, argv);
     failed += runZoneModelTests(argc, argv);
     failed += runRegulationTests(argc, argv);
     failed += runExerciseTests(argc, argv);

@@ -5,5 +5,6 @@
     <file>images/flame-red.png</file>
     <file>images/heat-black.png</file>
     <file>images/heat-red.png</file>
+    <file>images/clock.png</file>
     </qresource>
 </RCC>
