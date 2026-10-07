@@ -75,6 +75,12 @@
  *   outdoor_max_age_min=180     (older outdoor data counts as unknown)
  *   outdoor_unknown_protect=true
  *
+ *   [WINDOW_DETECTION]  (open window guessed from the temperature: Telegram only)
+ *   enabled=true
+ *   drop_c=1.0          (a drop this big below the highest reading ...)
+ *   window_min=10       (... of the last window_min minutes: window open?)
+ *   recover_c=0.3       (a rise this big above the lowest one: closed?)
+ *
  *   [VALVE_EXERCISE]    (anti-seize: cycle the relays idle for idle_days)
  *   enabled=true
  *   day=sunday          (monday..sunday or 1..7)
@@ -101,6 +107,8 @@
  *   name=AcquaThermoNet (prefix of the messages, useful with several devices)
  *   reminder_h=6        (still active alarms repeated every N hours, 0 = off)
  *   mqtt_down_min=10    (MQTT disconnected this long: alarm)
+ *   gateway_down_min=2  (RoomSense offline this long: alarm; a restart
+ *                        is shorter)
  *   api_url=https://api.telegram.org   (tests only)
  *
  *   [RELAY_LOG]         (CSV of the relay state changes, one file per month)
@@ -130,6 +138,15 @@ struct FrostConfig
     bool    unknownProtect      = true;     /* no (recent) outdoor data: protect */
 };
 
+/* Open window detection from the temperature of a zone (WindowDetector) */
+struct WindowConfig
+{
+    bool    enabled     = true;
+    double  dropC       = 1.0;      /* drop below the highest reading ... */
+    int     windowMin   = 10;       /* ... of the last windowMin minutes */
+    double  recoverC    = 0.3;      /* rise above the lowest reading: closed */
+};
+
 /* Thermoregulation timings */
 struct RegulationConfig
 {
@@ -149,6 +166,7 @@ struct TelegramConfig
     QString         name        = "AcquaThermoNet";
     int             reminderH   = 6;
     int             mqttDownMin = 10;
+    int             gatewayDownMin = 2;
     QString         apiUrl      = "https://api.telegram.org";
 };
 
@@ -189,6 +207,7 @@ public:
     void loadRelayLog(QString &path, int &keepMonths) const;
     TelegramConfig loadTelegram() const;
     ModeConfig loadModes() const;
+    WindowConfig loadWindow() const;
     ChronoConfig loadChrono(const QString &zoneName) const;
     /* state.ini [CHRONO]: profiles edited on the panel */
     void saveChrono(const QString &zoneName, const ChronoConfig &config);

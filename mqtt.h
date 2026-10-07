@@ -3,6 +3,7 @@
 
 #include "common.h"
 #include "QtMqtt/QMqttClient"
+#include "QtMqtt/QMqttSubscription"
 #include <QObject>
 #include <QTimer>
 #include <QHostAddress>
@@ -41,10 +42,11 @@ public slots:
 
 signals:
     void clientStateChanged( quint8 );
+    void gatewayStateChanged(int state);    /* GatewayState, from GATEWAY_STATUS_TOPIC */
 
 private slots:
     void stateChangedSlot();
-    void messageReceivedSlot(const QByteArray &message, const QMqttTopicName &topic);
+    void messageReceivedSlot(const QMqttMessage &msg);
     void publishSetPoint(int zone);
     void publishMode(int zone);
     void publishHouseMode();
@@ -68,6 +70,7 @@ private:
     QTimer                  *m_houseModeTimer;  /* window countdown republished every minute */
     QVector<QByteArray>     m_chronoSent;       /* last <zone>/chrono payloads: only changes are sent */
     QVector<QByteArray>     m_profileSent;      /* last <zone>/chrono/profile payloads, the same */
+    GatewayState            m_gateway = GatewayUnknown;
     /* Outdoor weather */
     bool                    m_weatherEnabled = false;
     int                     m_weatherExpireS = 0;
@@ -84,6 +87,7 @@ private:
     QString sensorTopic(int zone) const;
     void MqttHomeAssistantDiscovery();
     void parseSensorData(int zone, const QByteArray &message);
+    void setGatewayState(GatewayState state);
 };
 
 #endif // MQTT_H

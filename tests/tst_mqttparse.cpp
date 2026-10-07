@@ -1,5 +1,6 @@
 #include <QTest>
 #include <QRegularExpression>
+#include <algorithm>
 #include "mqttparse.h"
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -39,10 +40,12 @@ private slots:
 
     void matchSensorTopic()
     {
-        /* base with a '/' inside */
         QString name;
-        QVERIFY(MqttParse::matchZoneTopic("RoomSense/apartment/camera/data", "RoomSense/apartment", "data", name));
+        QVERIFY(MqttParse::matchZoneTopic("RoomSense/camera/data", BASE_TOPIC_SENSOR, TAIL_DATA, name));
         QCOMPARE(name, QString("camera"));
+        /* the gateway availability is not a zone */
+        QVERIFY(!MqttParse::matchZoneTopic("RoomSense/status", BASE_TOPIC_SENSOR, TAIL_DATA, name));
+        QVERIFY(!MqttParse::matchZoneTopic("RoomSense/apartment/camera/data", BASE_TOPIC_SENSOR, TAIL_DATA, name));
     }
 
     void sensorJsonStringsAndNumbers()
@@ -80,6 +83,13 @@ private slots:
         QTest::newRow("array")          << QByteArray("[1,2]");
         QTest::newRow("no temperature") << QByteArray(R"({"humidity":40})");
         QTest::newRow("bad temperature")<< QByteArray(R"({"temperature":"warm"})");
+        /* QString::toDouble accepts them: a nan would stop the regulation */
+        QTest::newRow("nan")            << QByteArray(R"({"temperature":"nan"})");
+        QTest::newRow("inf")            << QByteArray(R"({"temperature":"inf"})");
+        QTest::newRow("-inf")           << QByteArray(R"({"temperature":"-inf"})");
+        QTest::newRow("too hot")        << QByteArray(R"({"temperature":85})");
+        QTest::newRow("too cold")       << QByteArray(R"({"temperature":-40})");
+        QTest::newRow("huge string")    << QByteArray(R"({"temperature":"1e9"})");
     }
 
     void sensorJsonInvalid()
@@ -91,6 +101,130 @@ private slots:
         QVERIFY(!MqttParse::sensorJson(payload, d, &error));
         QVERIFY(!error.isEmpty());
         QCOMPARE(d.temp, 19.0);     /* untouched */
+    }
+
+    void sensorJsonLimits()
+    {
+        ZoneData d;
+        QVERIFY(MqttParse::sensorJson(R"({"temperature":-30})", d));
+        QCOMPARE(d.temp, -30.0);
+        QVERIFY(MqttParse::sensorJson(R"({"temperature":60})", d));
+        QCOMPARE(d.temp, 60.0);
+    }
+
+    void sensorJsonOptionalOutOfRange()
+    {
+        /* reading accepted, the bad optional fields keep their value */
+        ZoneData d;
+        d.humidity = 33;
+        d.battery = 77;
+        d.battmv = 2900;
+        d.unixTime = 1700000000;
+        QVERIFY(MqttParse::sensorJson(R"({"temperature":21,"humidity":300,"battery":"nan","battmv":-1,"data_time":"inf"})", d));
+        QCOMPARE(d.temp, 21.0);
+        QCOMPARE(int(d.humidity), 33);
+        QCOMPARE(int(d.battery), 77);
+        QCOMPARE(int(d.battmv), 2900);
+        QCOMPARE(d.unixTime, quint32(1700000000));
+    }
+
+    void parseSetPoint_data()
+    {
+        QTest::addColumn<QByteArray>("payload");
+        QTest::addColumn<bool>("ok");
+        QTest::addColumn<double>("temp");
+        QTest::newRow("integer")    << QByteArray("20")     << true  << 20.0;
+        QTest::newRow("decimal")    << QByteArray("21.3")   << true  << 21.3;
+        QTest::newRow("spaces")     << QByteArray(" 19.5\n") << true  << 19.5;
+        QTest::newRow("clamped later") << QByteArray("40")  << true  << 40.0;
+        QTest::newRow("text")       << QByteArray("warm")   << false << 0.0;
+        QTest::newRow("empty")      << QByteArray("")       << false << 0.0;
+        QTest::newRow("nan")        << QByteArray("nan")    << false << 0.0;
+        QTest::newRow("inf")        << QByteArray("inf")    << false << 0.0;
+        QTest::newRow("-inf")       << QByteArray("-inf")   << false << 0.0;
+    }
+
+    void parseSetPoint()
+    {
+        QFETCH(QByteArray, payload);
+        QFETCH(bool, ok);
+        QFETCH(double, temp);
+        double out = -1;
+        QCOMPARE(MqttParse::parseSetPoint(payload, out), ok);
+        if(ok)
+            QCOMPARE(out, temp);
+        else
+            QCOMPARE(out, -1.0);
+    }
+
+    /* MQTT topic filter match, + and # (enough for the test) */
+    static bool filterMatch(const QString &filter, const QString &topic)
+    {
+        const QStringList f = filter.split('/'), t = topic.split('/');
+        for(int i = 0; i < f.size(); i++)
+        {
+            if(f[i] == "#")
+                return true;
+            if(i >= t.size() || (f[i] != "+" && f[i] != t[i]))
+                return false;
+        }
+        return f.size() == t.size();
+    }
+
+    void subscriptions()
+    {
+        QStringList filters;
+        for(const MqttParse::Subscription &s : MqttParse::subscriptions())
+        {
+            filters << s.filter;
+            QCOMPARE(int(s.qos), s.filter == "homeassistant/status" ? 0 : 1);
+        }
+        QCOMPARE(filters, QStringList({ "homeassistant/status", "AcquaThermoNet/+/set_temp", "AcquaThermoNet/+/chrono/set",
+                                        "AcquaThermoNet/+/chrono/profile/set", "AcquaThermoNet/mode/set",
+                                        "RoomSense/+/data", "RoomSense/status" }));
+
+        auto subscribed = [&filters](const QString &topic) {
+            return std::any_of(filters.cbegin(), filters.cend(), [&topic](const QString &f) { return filterMatch(f, topic); });
+        };
+        /* commands, readings and the gateway availability */
+        for(const char *t : { "AcquaThermoNet/salotto/set_temp", "AcquaThermoNet/salotto/chrono/set",
+                              "AcquaThermoNet/salotto/chrono/profile/set", "AcquaThermoNet/mode/set",
+                              "RoomSense/salotto/data", "RoomSense/status", "homeassistant/status" })
+            QVERIFY2(subscribed(t), t);
+        /* nothing the controller publishes comes back */
+        for(const char *t : { "AcquaThermoNet/status", "AcquaThermoNet/salotto/state_temp", "AcquaThermoNet/salotto/state_mode",
+                              "AcquaThermoNet/salotto/chrono", "AcquaThermoNet/salotto/chrono/profile",
+                              "AcquaThermoNet/mode/state", "AcquaThermoNet/weather",
+                              "homeassistant/climate/salotto/config", "homeassistant/switch/salotto_chrono/config" })
+            QVERIFY2(!subscribed(t), t);
+    }
+
+    void refusedWhenRetained_data()
+    {
+        QTest::addColumn<QString>("topic");
+        QTest::addColumn<bool>("refused");
+        QTest::newRow("set_temp")       << "AcquaThermoNet/salotto/set_temp"            << true;
+        QTest::newRow("chrono/set")     << "AcquaThermoNet/salotto/chrono/set"          << true;
+        QTest::newRow("profile/set")    << "AcquaThermoNet/salotto/chrono/profile/set"  << true;
+        QTest::newRow("mode/set")       << "AcquaThermoNet/mode/set"                    << true;
+        QTest::newRow("reading")        << "RoomSense/salotto/data"           << true;
+        /* states: retained on purpose */
+        QTest::newRow("state_temp")     << "AcquaThermoNet/salotto/state_temp"          << false;
+        QTest::newRow("state_mode")     << "AcquaThermoNet/salotto/state_mode"          << false;
+        QTest::newRow("chrono")         << "AcquaThermoNet/salotto/chrono"              << false;
+        QTest::newRow("profile")        << "AcquaThermoNet/salotto/chrono/profile"      << false;
+        QTest::newRow("mode/state")     << "AcquaThermoNet/mode/state"                  << false;
+        QTest::newRow("status")         << "AcquaThermoNet/status"                      << false;
+        QTest::newRow("weather")        << "AcquaThermoNet/weather"                     << false;
+        QTest::newRow("ha status")      << "homeassistant/status"                       << false;
+        QTest::newRow("gateway status") << "RoomSense/status"                           << false;
+    }
+
+    void refusedWhenRetained()
+    {
+        QFETCH(QString, topic);
+        QFETCH(bool, refused);
+        QCOMPARE(MqttParse::refusedWhenRetained(topic), refused);
     }
 
     void weatherState()

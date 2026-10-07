@@ -23,7 +23,10 @@ trap cleanup EXIT
 check() {   # check DESCRIPTION FILE PATTERN
     if grep -qE "$3" "$2"; then echo "PASS  $1"; else echo "FAIL  $1"; FAILS=$((FAILS+1)); fi
 }
-pub() { python3 "$TOOLS/minibroker.py" pub $PORT "$1" "$2"; }
+check_not() {   # check_not DESCRIPTION FILE PATTERN
+    if grep -qE "$3" "$2"; then echo "FAIL  $1"; FAILS=$((FAILS+1)); else echo "PASS  $1"; fi
+}
+pub() { python3 "$TOOLS/minibroker.py" pub $PORT "$1" "$2" ${3:+retain}; }
 
 cd "$WORK"
 python3 "$TOOLS/minibroker.py" $PORT broker.log & PIDS+=($!)
@@ -70,12 +73,29 @@ name=E2E
 api_url=http://127.0.0.1:$((PORT + 60))
 EOF
 
+# retained by mistake before the start: never applied
+pub AcquaThermoNet/salotto/set_temp 22 retain
+pub RoomSense/camera/data '{"temperature":5}' retain
+# RoomSense stopped: its retained availability
+pub RoomSense/status offline retain
+
 QT_QPA_PLATFORM=offscreen "$APP" > app.log 2>&1 &
 APP_PID=$!
 sleep 3
 
-pub RoomSense/apartment/salotto/data '{"temperature":"15.0","humidity":"50","battery":"90"}'
+pub RoomSense/salotto/data '{"temperature":"15.0","humidity":"50","battery":"90"}'
 sleep 2
+# not numbers: refused
+pub RoomSense/camera/data '{"temperature":"nan"}'
+pub AcquaThermoNet/camera/set_temp nan
+sleep 1
+# camera: a drop of 1.2 degC (window open?), then a rise of 0.4 (closed?)
+pub RoomSense/camera/data '{"temperature":20.0}'
+sleep 0.5
+pub RoomSense/camera/data '{"temperature":18.8}'
+sleep 0.5
+pub RoomSense/camera/data '{"temperature":19.2}'
+sleep 1
 pub AcquaThermoNet/salotto/set_temp 14
 sleep 2
 pub AcquaThermoNet/camera/set_temp 30
@@ -83,6 +103,8 @@ sleep 2
 pub AcquaThermoNet/camera/chrono/set off
 sleep 2
 python3 "$TOOLS/minitelegram.py" inject $((PORT + 60)) 111 "/status"
+sleep 1
+pub RoomSense/status online
 python3 "$TOOLS/minitelegram.py" inject $((PORT + 60)) 999 "/status"
 sleep 2
 # chrono program from RoomSense (after /status: it changes the setpoint)
@@ -101,12 +123,19 @@ check "discovery for 2 zones"          broker.log "homeassistant/climate/camera/
 check "availability online"            broker.log "AcquaThermoNet/status online"
 check "weather disabled: HA sensors removed" broker.log "homeassistant/sensor/E2E_outdoor_temperature/config +(\[R\])?$"
 check "all relays OFF at startup"      sim.log    "#1 write relay 5 OFF"
+check "retained set_temp ignored"      app.log    "Retained message ignored on AcquaThermoNet/salotto/set_temp"
+check_not "retained set_temp not applied" broker.log "salotto/state_temp 22 "
+check "retained reading ignored"       app.log    "Retained message ignored on RoomSense/camera/data"
+check "RoomSense offline at the start"  app.log    "RoomSense gateway offline"
+check "RoomSense online again"         app.log    "RoomSense gateway online"
 echo "--- regulation"
 check "15 < 17-0.5: relay 5 ON"        sim.log    "write relay 5 ON"
 check "state_mode heat published"      broker.log "salotto/state_mode heat"
 check "set_temp 14: state_temp 14"     broker.log "salotto/state_temp 14 "
 check "set_temp 14: state_mode off"    broker.log "salotto/state_mode off"
 check "set_temp 30 clamped to 25"      broker.log "camera/state_temp 25 "
+check "temperature nan refused"        app.log    'Invalid sensor data for zone "camera"'
+check "set_temp nan refused"           app.log    'Invalid setpoint for zone "camera"'
 echo "--- chrono"
 check "chrono switch discovery"        broker.log "homeassistant/switch/camera_chrono/config"
 check "climate chrono attributes"      broker.log 'homeassistant/climate/camera/config .*"json_attr_t":"AcquaThermoNet/camera/chrono"'
@@ -134,6 +163,9 @@ echo "--- telegram"
 check "start message"                  telegram.log '"chat_id": 111, "text": ".*E2E .*started'
 check "/status answered"               telegram.log 'Salotto: 15\.0.{1,6} set 14\.0'
 check "stop message"                   telegram.log 'stopping \(clean shutdown'
+check "/status: RoomSense OFFLINE"     telegram.log 'RoomSense OFFLINE'
+check "window open message"            telegram.log 'Camera: window open\? Temperature 20\.0 -> 18\.8'
+check "window closed message"          telegram.log 'Camera: temperature rising again, window closed\?'
 check "chat not allowed ignored"       app.log      'not allowed, ignored: chat id 999'
 if grep -q E2ETOKEN app.log log/app.log; then echo "FAIL  token not in the logs"; FAILS=$((FAILS+1)); else echo "PASS  token not in the logs"; fi
 cp log/relays-*.csv "${E2E_KEEP_RELAYLOG:-/dev/null}" 2>/dev/null

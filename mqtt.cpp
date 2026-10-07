@@ -76,7 +76,6 @@ Mqtt::Mqtt(const mqtt_brk_t &broker, const QString &uniqueId, ZoneModel *zones, 
         if(error != QMqttClient::NoError)
             qCWarning(lcMqtt) << "MQTT client error: " << error;
     });
-    connect(m_client, &QMqttClient::messageReceived, this, &Mqtt::messageReceivedSlot);
 
     /* Local state is the source of truth: publish what changes */
     connect(m_zones, &ZoneModel::setPointChanged,   this, &Mqtt::publishSetPoint);
@@ -310,7 +309,7 @@ QString Mqtt::zoneTopic(int zone) const
 
 /**
  * @brief Mqtt::sensorTopic
- * @return RoomSense/apartment/<zone>/data
+ * @return RoomSense/<zone>/data
  */
 QString Mqtt::sensorTopic(int zone) const
 {
@@ -330,6 +329,7 @@ void Mqtt::stateChangedSlot()
         /* TLS: the socket may still be open (e.g. broker refused CONNECT) */
         if(m_tlsSocket && m_tlsSocket->state() != QAbstractSocket::UnconnectedState)
             m_tlsSocket->abort();
+        setGatewayState(GatewayUnknown);
         scheduleReconnect();
     }
     else if(state == QMqttClient::Connecting)
@@ -348,13 +348,18 @@ void Mqtt::stateChangedSlot()
 
             MqttHomeAssistantDiscovery();
 
-            const QStringList filters = { HA_STATUS_TOPIC, BASE_TOPIC "/#", BASE_TOPIC_SENSOR "/#" };
-            for(const QString &filter : filters)
+            /* messages from the subscriptions, not from the client: they
+             * carry the retain flag. New subscriptions at every connection. */
+            for(const MqttParse::Subscription &s : MqttParse::subscriptions())
             {
-                if( !m_client->subscribe(QMqttTopicFilter(filter)) )
-                    qCWarning(lcMqtt) << "subscription error on topic: " << filter;
-                else
-                    qCDebug(lcMqtt) << "subscription OK on topic: " << filter;
+                QMqttSubscription *sub = m_client->subscribe(QMqttTopicFilter(s.filter), s.qos);
+                if( !sub )
+                {
+                    qCWarning(lcMqtt) << "subscription error on topic: " << s.filter;
+                    continue;
+                }
+                connect(sub, &QMqttSubscription::messageReceived, this, &Mqtt::messageReceivedSlot, Qt::UniqueConnection);
+                qCDebug(lcMqtt) << "subscription OK on topic: " << s.filter << "QoS" << s.qos;
             }
         }
     }
@@ -375,14 +380,23 @@ void Mqtt::forceReconnectToHost()
 
 /**
  * @brief Mqtt::messageReceivedSlot
- * @param message
- * @param topic
+ * @param msg
  */
-void Mqtt::messageReceivedSlot(const QByteArray &message, const QMqttTopicName &topic)
+void Mqtt::messageReceivedSlot(const QMqttMessage &msg)
 {
-    const QString topicName = topic.name();
+    const QString topicName = msg.topic().name();
+    const QByteArray message = msg.payload();
     QString zoneName;
     int zone;
+
+    /* the broker sets retain only on the stored message delivered at the
+     * subscription: someone published a command or a reading retained */
+    if( msg.retain() && MqttParse::refusedWhenRetained(topicName) )
+    {
+        qCWarning(lcMqtt).noquote() << "Retained message ignored on" << topicName
+                                    << ": commands and readings must be published with retain false";
+        return;
+    }
 
     //qCDebug(lcMqtt) << "Received Topic: " << topicName << " Message: " << message;
 
@@ -394,6 +408,18 @@ void Mqtt::messageReceivedSlot(const QByteArray &message, const QMqttTopicName &
             qCInfo(lcMqtt) << "Home Assistant online, republish discovery";
             MqttHomeAssistantDiscovery();
         }
+        return;
+    }
+
+    //RoomSense/status: availability of the sensor gateway (retained)
+    if( topicName == GATEWAY_STATUS_TOPIC )
+    {
+        if( message == PAYLOAD_ONLINE )
+            setGatewayState(GatewayOnline);
+        else if( message == PAYLOAD_OFFLINE )
+            setGatewayState(GatewayOffline);
+        else
+            qCWarning(lcMqtt) << "Invalid RoomSense status:" << message;
         return;
     }
 
@@ -417,9 +443,8 @@ void Mqtt::messageReceivedSlot(const QByteArray &message, const QMqttTopicName &
         if( zone < 0 )
             return;
 
-        bool ok;
-        double temp = message.toDouble(&ok);
-        if( !ok )
+        double temp;
+        if( !MqttParse::parseSetPoint(message, temp) )
         {
             qCWarning(lcMqtt) << "Invalid setpoint for zone" << zoneName << ":" << message;
             return;
@@ -480,18 +505,7 @@ void Mqtt::messageReceivedSlot(const QByteArray &message, const QMqttTopicName &
         return;
     }
 
-    //AcquaThermoNet/ZONA/set_mode
-    if( MqttParse::matchZoneTopic(topicName, BASE_TOPIC, TAIL_SET_MODE, zoneName) )
-    {
-        zone = m_zones->indexOf(zoneName);
-        if( zone < 0 )
-            return;
-
-        m_zones->setHeat(zone, message == "heat");
-        return;
-    }
-
-    //RoomSense/apartment/ZONA/data
+    //RoomSense/ZONA/data
     if( MqttParse::matchZoneTopic(topicName, BASE_TOPIC_SENSOR, TAIL_DATA, zoneName) )
     {
         zone = m_zones->indexOf(zoneName);
@@ -501,6 +515,20 @@ void Mqtt::messageReceivedSlot(const QByteArray &message, const QMqttTopicName &
         parseSensorData(zone, message);
         return;
     }
+}
+
+/**
+ * @brief Mqtt::setGatewayState
+ * Logged and signalled on change only
+ */
+void Mqtt::setGatewayState(GatewayState state)
+{
+    if( state == m_gateway )
+        return;
+    m_gateway = state;
+    if( state != GatewayUnknown )
+        qCInfo(lcMqtt) << "RoomSense gateway" << (state == GatewayOnline ? "online" : "offline");
+    emit gatewayStateChanged(state);
 }
 
 /**
@@ -538,7 +566,6 @@ void Mqtt::MqttHomeAssistantDiscovery()
         payload.insert("uniq_id",       m_uniqueId +"_"+ name);
 
         payload.insert("avty_t",        STATUS_TOPIC);                                  // Topic availability (online/offline)
-        //payload.insert("mode_cmd_t",    zoneTopic(zone) + "/" TAIL_SET_MODE);         // Topic per impostare la modalità
         payload.insert("mode_stat_t",   zoneTopic(zone) + "/" TAIL_STATE_MODE);         // Topic per la modalità corrente
         payload.insert("temp_cmd_t",    zoneTopic(zone) + "/" TAIL_SET_TEMP);           // Topic per impostare la temperatura target
         payload.insert("temp_stat_t",   zoneTopic(zone) + "/" TAIL_STATE_TEMP);         // Topic per la temperatura target corrente

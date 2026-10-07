@@ -43,6 +43,7 @@ SOURCES += \
     $$ATN_SRC/telegramnotifier.cpp \
     $$ATN_SRC/termoregolazione.cpp \
     $$ATN_SRC/valveexercise.cpp \
+    $$ATN_SRC/windowdetector.cpp \
     $$ATN_SRC/watchdog.cpp \
     $$ATN_SRC/weather.cpp \
     $$ATN_SRC/zonecard.cpp \
@@ -71,6 +72,7 @@ HEADERS += \
     $$ATN_SRC/telegramnotifier.h \
     $$ATN_SRC/termoregolazione.h \
     $$ATN_SRC/valveexercise.h \
+    $$ATN_SRC/windowdetector.h \
     $$ATN_SRC/watchdog.h \
     $$ATN_SRC/weather.h \
     $$ATN_SRC/zonecard.h \

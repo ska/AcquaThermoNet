@@ -29,6 +29,7 @@
 #include "opensslpreload.h"
 #include "telegrambot.h"
 #include "telegramnotifier.h"
+#include "windowdetector.h"
 
 QString getMacAddress()
 {
@@ -164,6 +165,11 @@ int main(int argc, char *argv[])
     QObject::connect( &wh, &Weather::newWeatherInfo, mq, &Mqtt::setWeather );
 
     /*
+     * Open window guessed from the temperature (log and Telegram for now)
+     * * */
+    WindowWatch *windows = new WindowWatch(zones, conf.loadWindow(), &a);
+
+    /*
      * WatchDog: refreshed by the main event loop, a hang reboots the board
      * * */
     WatchDog *wdt = new WatchDog(&a);
@@ -236,6 +242,9 @@ int main(int argc, char *argv[])
         QObject::connect( frameProcessor, &ModBusFrameProcessor::onlineChanged,   tg,    &TelegramNotifier::setModbusOnline );
         QObject::connect( serial,         &SerialUart::portOpenChanged,           tg,    &TelegramNotifier::setSerialOpen );
         QObject::connect( &wh,            &Weather::newWeatherInfo,               tg,    &TelegramNotifier::setWeather );
+        QObject::connect( mq,             &Mqtt::gatewayStateChanged,             tg,    &TelegramNotifier::setGatewayState );
+        QObject::connect( windows,        &WindowWatch::windowOpened,             tg,    &TelegramNotifier::onWindowOpened );
+        QObject::connect( windows,        &WindowWatch::windowClosed,             tg,    &TelegramNotifier::onWindowClosed );
         QObject::connect( mq, &Mqtt::clientStateChanged, tg, [tg](quint8 state) {
             tg->setMqttConnected(state == QMqttClient::Connected);
         });

@@ -85,7 +85,7 @@ the panel must point to `Sdk/1.3.4-un60`.
 ### 2.5 Version
 
 The version comes from the latest git tag `vX.Y.Z` **when qmake runs**:
-`2.4.0` exactly at the tag, `2.4.0-<hash>` after it, `0.0.0` without a
+`3.0.0` exactly at the tag, `3.0.0-<hash>` after it, `0.0.0` without a
 tag. Rerun qmake after a commit or a tag, or the binary and the zip keep
 the old version.
 
@@ -163,8 +163,8 @@ checkout, so that the version is exactly the tag (after it: `-<hash>`;
 the application banner also says `-dirty` with uncommitted changes):
 
 ```sh
-git -C $ATN worktree add /tmp/atn-v2.4.0 v2.4.0
-cd /tmp/atn-v2.4.0 && git submodule update --init
+git -C $ATN worktree add /tmp/atn-v3.0.0 v3.0.0
+cd /tmp/atn-v3.0.0 && git submodule update --init
 source /home/devel/Sviluppi/Sdk/1.3.4-un60/environment-setup-cortexa8hf-neon-poky-linux-gnueabi
 mkdir build && cd build && qmake ../AcquaThermoNet.pro && make -j$(nproc)
 ```
@@ -173,13 +173,13 @@ Before installing, check:
 
 | Check | Command | Expected |
 |---|---|---|
-| version | `unzip -p dist/*.zip package.info` | `<version>2.4.0</version>`, no hash |
+| version | `unzip -p dist/*.zip package.info` | `<version>3.0.0</version>`, no hash |
 | CPU | `readelf -A bin_arm/AcquaThermoNet \| grep Tag_CPU_name` | `"7-A"` |
 | stripped | `unzip -l dist/*.zip` | `deploy/AcquaThermoNet` about 0.6 MB (17 MB not stripped) |
-| checksum | `(cd dist && sha256sum *.zip > AcquaThermoNet_Package_Arm32_2.4.0.zip.sha256)` | kept with the zip |
+| checksum | `(cd dist && sha256sum *.zip > AcquaThermoNet_Package_Arm32_3.0.0.zip.sha256)` | kept with the zip |
 
 Then store the zip and the `.debug` together, and remove the worktree
-(`git -C $ATN worktree remove /tmp/atn-v2.4.0`).
+(`git -C $ATN worktree remove /tmp/atn-v3.0.0`).
 
 ### 4.3 Install
 

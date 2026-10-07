@@ -53,6 +53,7 @@ private:
     QVector<QLabel*>        m_barSeparators[2];     /* before field 1.. */
     QLabel                  *m_barClock[2];         /* right: date, time */
     QString                 m_mqttStatus;
+    int                     m_gatewayState = GatewayUnknown;
     QString                 m_weatherInfo;
     bool                    m_serialOpen;
     bool                    m_modbusOnline;

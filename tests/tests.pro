@@ -27,6 +27,7 @@ SOURCES += \
     tst_telegram.cpp \
     tst_regulation.cpp \
     tst_weather.cpp \
+    tst_window.cpp \
     tst_zonemodel.cpp \
     $$SRC/chrono.cpp \
     $$SRC/configuration.cpp \
@@ -40,6 +41,7 @@ SOURCES += \
     $$SRC/telegramnotifier.cpp \
     $$SRC/termoregolazione.cpp \
     $$SRC/valveexercise.cpp \
+    $$SRC/windowdetector.cpp \
     $$SRC/weather.cpp \
     $$SRC/zonemodel.cpp
 
@@ -49,5 +51,6 @@ HEADERS += \
     $$SRC/termoregolazione.h \
     $$SRC/telegramnotifier.h \
     $$SRC/valveexercise.h \
+    $$SRC/windowdetector.h \
     $$SRC/weather.h \
     $$SRC/zonemodel.h

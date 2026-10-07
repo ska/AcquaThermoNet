@@ -5,7 +5,7 @@ It reads room temperatures from MQTT sensors, drives the zone valves through
 a Modbus RTU relay board and appears in Home Assistant as one climate entity
 per zone. Alarms and status also go to Telegram.
 
-This document describes version **2.4.0**. The same content, with rendered
+This document describes version **3.0.0**. The same content, with rendered
 diagrams, is in [`AcquaThermoNet.html`](AcquaThermoNet.html). Telegram
 setup: [`TELEGRAM.md`](TELEGRAM.md). Deployment package:
 [`../tools/package/README.md`](../tools/package/README.md).
@@ -108,7 +108,7 @@ flowchart LR
     end
 
     S1 & S2 & S3 -- "BLE" --> RS
-    RS <-- "RoomSense/apartment/+/data<br/>setpoints" --> B
+    RS <-- "RoomSense/+/data<br/>setpoints" --> B
     B <--> APP
     HA <--> B
     APP -- "RS485 9600 8N1" --> RB
@@ -189,6 +189,7 @@ flowchart TB
 | `MqttParse` | `mqttparse.*` | Pure topic/payload helpers (unit tested) |
 | `Termoregolazione` | `termoregolazione.*` | Regulation, relay ownership, feedback check, frost protection, shutdown |
 | `ValveExercise` | `valveexercise.*` | Anti-seize schedule and ON/OFF sequence |
+| `WindowDetector`, `WindowWatch` | `windowdetector.*` | Open window guessed from the temperature trend of each zone (§7.9); Telegram only |
 | `ModBusFrameProcessor` | `modbusframeprocessor.*` | Relay write/read requests, 10 s poll, board online state |
 | `ModBusFrame` | `modbusframe.*` | Modbus RTU frame build and CRC check |
 | `SerialUart` | `serialuart.*` | RS485 transport, request queue, frame gap, reopen |
@@ -281,6 +282,9 @@ Exit codes, read by `start.sh`:
 
 ## 5. MQTT interface
 
+All topics of AcquaThermoNet, RoomSense and Home Assistant with their
+payloads, on one page: [`MQTT_TOPICS.md`](MQTT_TOPICS.md).
+
 ### 5.1 Connection
 
 | | |
@@ -293,7 +297,8 @@ Exit codes, read by `start.sh`:
 | On connect | `AcquaThermoNet/status` = `online`, QoS 1, retained |
 | Reconnect | backoff 1, 2, 5, 10, then 30 s |
 | Publish | QoS 1, **retained**, for every message |
-| Subscriptions | `homeassistant/status`, `AcquaThermoNet/#`, `RoomSense/apartment/#` (QoS 0) |
+| Subscriptions | `AcquaThermoNet/+/set_temp`, `…/+/chrono/set`, `…/+/chrono/profile/set`, `AcquaThermoNet/mode/set`, `RoomSense/+/data`, `RoomSense/status` (QoS 1: commands and readings at least once, as they are sent); `homeassistant/status` (QoS 0). Only what it reads: nothing it publishes comes back (`MqttParse::subscriptions`) |
+| Retained input | a command (`set_temp`, `chrono/set`, `chrono/profile/set`, `mode/set`) or a reading delivered retained is ignored and logged (`Retained message ignored on …`): it would be applied again at every connection, or count as fresh for a dead sensor |
 | TLS | optional, see 5.6 |
 
 Discovery and subscriptions are sent at the first connection after a
@@ -317,12 +322,12 @@ discovery.
 | `AcquaThermoNet/<zone>/chrono/set` | in | `on` / `off` | – | chrono on/off, from the HA switch and the RoomSense panel |
 | `AcquaThermoNet/<zone>/chrono/profile` | out | `{"edited":true,"enabled":true,"holiday":[],"holiday_days":[6,7],"weekday":[{"at":"06:30","temp":20.5},{"at":"22:30","temp":17}]}` | yes | chrono program of the zone, for the RoomSense panel; at connect, when it changes and after every `chrono/profile/set` |
 | `AcquaThermoNet/<zone>/chrono/profile/set` | in | the whole program `{"enabled":…,"weekday":[…],"holiday":[…]}` or `{"reset":true}` | – | from the RoomSense panel; strict: anything invalid refuses it (logged with the reason) |
-| `AcquaThermoNet/<zone>/set_mode` | in | `heat` / anything else = off | – | not advertised to HA, see §22 |
 | `AcquaThermoNet/mode/set` | in | `normal` / `window` / `away` / `boost` | – | house mode, from the RoomSense panel (§7.7) |
 | `AcquaThermoNet/mode/state` | out | `{"mode":"window","remaining_s":1740}` | yes | after every mode command, at every change, every minute while `window` or `boost` |
 | `AcquaThermoNet/weather` | out | weather JSON (5.3) | yes | at every new reading of the weather service (§11) |
 | `homeassistant/sensor/<unique_id>_outdoor_<field>/config` | out | discovery JSON (5.3) | yes | 5 outdoor sensors; empty (removed) with the weather disabled |
-| `RoomSense/apartment/<zone>/data` | in | sensor JSON (5.4) | – | also HA `curr_temp_t` |
+| `RoomSense/<zone>/data` | in | sensor JSON (5.4) | – | also HA `curr_temp_t` |
+| `RoomSense/status` | in | `online` / `offline` | yes | RoomSense availability (its Will): status bar, Telegram alarm after `gateway_down_min` |
 | `homeassistant/status` | in | `online` | – | HA restarted: republish discovery |
 
 ### 5.3 Home Assistant discovery
@@ -334,7 +339,7 @@ keys come out in alphabetical order):
 ```json
 {
   "avty_t": "AcquaThermoNet/status",
-  "curr_temp_t": "RoomSense/apartment/salotto/data",
+  "curr_temp_t": "RoomSense/salotto/data",
   "curr_temp_tpl": "{{ value_json.temperature }}",
   "device": {
     "identifiers": ["001122aabbcc_salotto"],
@@ -456,9 +461,14 @@ so HA removes the sensors.
 | `data_time` | no | number/string, epoch | stored |
 | `mac` | no | string | stored |
 
-A message without a valid `temperature`, or not a JSON object, is rejected
-and logged (`Invalid sensor data for zone …`); missing optional fields keep
-their previous value. Every valid message resets the zone sensor timeout.
+A message without a valid `temperature`, with a `temperature` outside
+−30…60 °C (`SENSOR_TEMP_MIN`/`MAX`, e.g. the 85 or −40 of a decoding
+error), or not a JSON object, is rejected and logged (`Invalid sensor data
+for zone …`). `nan` and `inf` are never numbers (`QString::toDouble`
+accepts them as strings: a NaN temperature would freeze the regulation of
+the zone and still reset its timeout). Missing optional fields, or out of
+their range (humidity and battery 0…100, `battmv` 0…65535), keep their
+previous value. Every valid message resets the zone sensor timeout.
 Messages for zones not in `[ZONES] list` are ignored.
 
 Full contract for RoomSense, the application that publishes the sensors
@@ -503,7 +513,7 @@ sequenceDiagram
     participant ZM as ZoneModel
     participant TR as Termoregolazione
 
-    S->>B: RoomSense/apartment/camera/data, temperature 19.2
+    S->>B: RoomSense/camera/data, temperature 19.2
     B->>MQ: message
     MQ->>MQ: parse JSON (MqttParse sensorJson)
     MQ->>ZM: setSensorData(camera) - lastSeen = now
@@ -531,7 +541,7 @@ the MQTT connection altogether: it never falls back to plain TCP.
 ```sh
 # everything the application publishes and receives
 mosquitto_sub -h <broker> -u <user> -P <password> -v \
-  -t 'AcquaThermoNet/#' -t 'homeassistant/climate/#' -t 'RoomSense/apartment/#'
+  -t 'AcquaThermoNet/#' -t 'homeassistant/climate/#' -t 'RoomSense/#'
 
 # set a zone setpoint (what HA does)
 mosquitto_pub -h <broker> -u <user> -P <password> \
@@ -550,7 +560,7 @@ mosquitto_pub -h <broker> -u <user> -P <password> \
 
 # simulate a sensor
 mosquitto_pub -h <broker> -u <user> -P <password> \
-  -t RoomSense/apartment/salotto/data \
+  -t RoomSense/salotto/data \
   -m '{"temperature":"19.2","humidity":"50","battery":"90"}'
 
 # force HA discovery again
@@ -829,6 +839,31 @@ flowchart TB
   the panel`, `from Home Assistant`, `over MQTT`); at start `no new slot, setpoint 20.0 kept`
   when the manual value stays.
 
+### 7.9 Open window detection
+
+A window opened in winter makes the room temperature fall much faster
+than any passive cooling: `WindowWatch` (`windowdetector.*`) follows the
+readings of each zone and guesses it. **Information only for now**: a log
+line and a Telegram message; the regulation does not change (what to do
+with it is still to be decided, §22).
+
+- **Open?** A reading at least `drop_c` (1.0 °C) below the highest
+  reading of the last `window_min` (10) minutes. A zone cooling with the
+  heating off loses well under 1 °C in 10 min.
+- **Closed?** A reading `recover_c` (0.3 °C) above the lowest one since
+  the drop. The readings before the drop are forgotten, so the same drop
+  is not reported again.
+- Suspended during the house mode `window` (opened on purpose); a lost
+  sensor starts again from its next reading, without messages.
+- Logs: `Zone camera: window open? 20.4 -> 19.2 degC in 4 min`, `Zone
+  camera: temperature rising again, window closed? (open 25 min, lowest
+  17.8 degC)`. Telegram: the same, with the window icon; not alarms, so
+  not in the reminders.
+
+Settings: `[WINDOW_DETECTION]` (§16). The sensor sits away from the
+window: a drop is seen with a delay, and a small room, or a sensor near
+the window, reacts more than a large one.
+
 ---
 
 ## 8. Frost protection
@@ -970,6 +1005,9 @@ Status bar, two rows of fields with the `|` separators aligned in columns:
 
 - `AcquaThermoNet v<version> | MQTT: connected/connecting/disconnected |
   Modbus: online/OFFLINE/port closed | <LOCATION> <temp>°C <hum>% <press>hPa`;
+  `RoomSense OFFLINE` instead of `MQTT: connected` while RoomSense publishes
+  `offline` (no room for one more field; the zone cards show the missing
+  readings only after the sensor timeout);
 - `Host: <hostname> | IP: <IPv4> | MAC: <hardware address>` of the interface used
   for the MQTT broker connection; while MQTT is not connected, of the first
   active non loopback interface with an IPv4 (`Network: none` if none, `MAC: --`
@@ -1042,6 +1080,8 @@ Messages look like `⚠️ [Casa 14:05] Salotto: no sensor data, zone OFF.`
 | Modbus board offline / online | 3 missed polls |
 | serial port lost / open | `SerialUart` |
 | MQTT not connected for `mqtt_down_min` / back | broker connection |
+| RoomSense offline for `gateway_down_min` / online again | `RoomSense/status` (a restart of RoomSense is shorter: no message) |
+| window open? / closed? (information, not repeated) | temperature trend of the zone (§7.9) |
 | start (with warning after an unclean stop), stop | application |
 
 Still active alarms are repeated every `reminder_h` hours. Commands (read
@@ -1209,6 +1249,15 @@ until `Reset`.
 | `outdoor_max_age_min` | 180 | older outdoor data counts as unknown |
 | `outdoor_unknown_protect` | `true` | unknown outdoor = protect |
 
+### [WINDOW_DETECTION]
+
+| Key | Default | |
+|---|---|---|
+| `enabled` | `true` | open window guessed from the temperature (§7.9), Telegram only |
+| `drop_c` | 1.0 | °C below the highest reading of the last `window_min`, 0.3…5 |
+| `window_min` | 10 | 1…60 |
+| `recover_c` | 0.3 | °C above the lowest reading: closed again, 0.1…`drop_c` |
+
 ### [VALVE_EXERCISE]
 
 | Key | Default | |
@@ -1249,6 +1298,7 @@ until `Reset`.
 | `name` | `AcquaThermoNet` | message prefix |
 | `reminder_h` | 6 | repeat active alarms, 0 = off |
 | `mqtt_down_min` | 10 | min 1 |
+| `gateway_down_min` | 2 | RoomSense offline this long: alarm; min 1 |
 | `api_url` | `https://api.telegram.org` | tests only |
 
 ### [RELAY_LOG]
@@ -1429,12 +1479,12 @@ generated `version.h`):
 
 | Build | Version |
 |---|---|
-| exactly at tag `v2.4.0` | `2.4.0` |
-| commits after the tag | `2.4.0-<short hash>` |
+| exactly at tag `v3.0.0` | `3.0.0` |
+| commits after the tag | `3.0.0-<short hash>` |
 | no git / no tag | `0.0.0` |
 
-Banner: `AcquaThermoNet v2.4.0 (git 1a2b3c4, built 2026-10-07 09:30:00 UTC)`
-(`-dirty` with uncommitted changes). Release: `git tag -a v2.4.0 -m v2.4.0`,
+Banner: `AcquaThermoNet v3.0.0 (git 1a2b3c4, built 2026-10-07 18:30:00 UTC)`
+(`-dirty` with uncommitted changes). Release: `git tag -a v3.0.0 -m v3.0.0`,
 then rerun qmake.
 
 ### 18.5 OpenSSL on the desktop
@@ -1490,7 +1540,7 @@ What every test checks: [`TESTING.md`](TESTING.md).
 
 ### 20.1 Unit tests
 
-QtTest, no hardware or broker needed, 14 suites (about 140 test functions):
+QtTest, no hardware or broker needed, 15 suites (about 150 test functions):
 
 | Suite | Covers |
 |---|---|
@@ -1500,6 +1550,7 @@ QtTest, no hardware or broker needed, 14 suites (about 140 test functions):
 | `tst_regulation` | hysteresis, min cycle, sensor timeout, relay feedback, shutdown |
 | `tst_frost` | frost conditions and cycle |
 | `tst_exercise` | valve exercise schedule and sequence |
+| `tst_window` | open window detection: drop, slow cooling, old readings, closed again, house mode, lost sensor, `[WINDOW_DETECTION]` |
 | `tst_modbus` | frames, CRC, online/offline |
 | `tst_mqttparse` | topic matching, sensor JSON, weather, chrono state, program and commands, switch discovery |
 | `tst_netinfo` | network row of the GUI (interface, IP, MAC) |
@@ -1554,7 +1605,8 @@ of zone N, with the `[CHRONO]` profiles of the ini.
 | `Modbus relay board offline: 3 poll answers missed` | board lost; relays shown unknown |
 | `Relay n zone … is 0 expected 1, resend` / `does not follow commands` | relay or board fault, or another master on the bus |
 | `Sensor timeout zone … zone OFF` | sensor silent for `sensor_timeout_s`: battery, range, topic name |
-| `Invalid sensor data for zone …` | payload without numeric `temperature` or not JSON |
+| `Retained message ignored on …` | someone published a command or a reading with retain: clear it (`mosquitto_pub -r -n -t <topic>`) and fix the publisher |
+| `Invalid sensor data for zone …` | payload without numeric `temperature`, temperature outside −30…60 °C, or not JSON |
 | `MQTT client error: …` | broker address/credentials; see `MQTT TLS error:` lines for TLS |
 | `MQTT TLS configuration invalid: not connecting` | unreadable `ca_file`/`cert_file`/`key_file` |
 | `SSL handshake failed` (desktop) | OpenSSL 1.1 not preloaded, see §18.5 |
@@ -1573,19 +1625,23 @@ of zone N, with the `[CHRONO]` profiles of the ini.
 
 - **One device per broker**: topics (`AcquaThermoNet/…`,
   `homeassistant/climate/<zone>/config`) are not prefixed by the device id.
-- **`set_mode`** is handled but not advertised to HA (no `mode_cmd_t`): it
-  only sets the reported heat demand, which the regulation overrides on the
-  next switch, while the relay is not commanded. Planned with the HA modes
-  ("point 10" of the backlog).
+- **No HVAC mode from Home Assistant**: the climate has no `mode_cmd_t`,
+  the heat demand (`state_mode`) is only the regulation's. A `set_mode`
+  topic once changed the reported heat demand without the relay (removed);
+  a real one is planned with the HA modes ("point 10" of the backlog).
 - Each zone is a separate HA *device* (identifiers per zone); the discovery
   model string is fixed (`AcquaThermoNet Ver 0.1`).
 - UI, log and Telegram texts are English only; `tr()` translation planned.
 - To verify on the real device: CA certificates for TLS/HTTPS, JMLauncher
-  handling of versions like `2.4.0-<hash>`, `background` flag, serial port
+  handling of versions like `3.0.0-<hash>`, `background` flag, serial port
   reopen after `kill -9`.
 - Qt 6 port postponed.
 
 ### Planned
+
+Open window (§7.9): decide what to do with it (e.g. the zone OFF while
+open, or a question on Telegram), after watching how reliable the guess
+is on the real rooms.
 
 Chrono thermostat, next steps: an alternative panel editor with one
 slot selected on a large chart and large −/+ buttons (time, setpoint),

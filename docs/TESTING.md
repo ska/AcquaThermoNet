@@ -6,8 +6,8 @@ them: [`BUILD.md`](BUILD.md) §3; overview in
 
 | Level | Where | Needs | Size |
 |---|---|---|---|
-| Unit tests | `tests/`, one binary `tests/tests` | nothing: no broker, relay board, network or display | 14 suites, about 140 test functions |
-| End to end | `tools/e2e.sh` | Python 3, no other AcquaThermoNet instance on the PC | 36 checks |
+| Unit tests | `tests/`, one binary `tests/tests` | nothing: no broker, relay board, network or display | 15 suites, about 150 test functions |
+| End to end | `tools/e2e.sh` | Python 3, no other AcquaThermoNet instance on the PC | 46 checks |
 
 Run both after every change to the code. The GUI screenshot
 tool (`guishot`, BUILD.md §3.3) is not a test: it only renders the pages.
@@ -62,10 +62,13 @@ tool (`guishot`, BUILD.md §3.3) is not a test: it only renders the pages.
 | Test | Checks |
 |---|---|
 | `matchZoneTopic` | `AcquaThermoNet/<zone>/<tail>`: other tail or base, empty zone, nested levels, a base that is only a prefix |
-| `matchSensorTopic` | `RoomSense/apartment/<zone>/data` (base with a `/` inside) |
+| `matchSensorTopic` | `RoomSense/<zone>/data`; `RoomSense/status` and the old `RoomSense/apartment/<zone>/data` are not readings |
 | `sensorJsonStringsAndNumbers` | sensor JSON with numbers or numeric strings, all fields, negative temperature |
 | `sensorJsonKeepsMissingFields` | optional fields missing: the previous humidity and battery stay |
-| `sensorJsonInvalid` | not JSON, array, no or bad `temperature`: refused with a reason, zone untouched |
+| `sensorJsonInvalid` | not JSON, array, no or bad `temperature`, `"nan"`, `"inf"`, `"-inf"`, 85, −40, `"1e9"`: refused with a reason, zone untouched |
+| `sensorJsonLimits` | −30 and 60 °C accepted |
+| `sensorJsonOptionalOutOfRange` | humidity 300, battery `"nan"`, `battmv` −1, `data_time` `"inf"`: reading accepted, those fields keep their value |
+| `parseSetPoint` | `set_temp` payload: integer, decimal, spaces, out of range (clamped later); text, empty, `nan`, `inf` refused |
 | `weatherState` | `AcquaThermoNet/weather` payload |
 | `weatherDiscovery` | the 5 Home Assistant outdoor sensors (topics, ids, availability, expiry, units); disabled: empty payloads that remove them |
 | `chronoState` | `<zone>/chrono`: off; on with paused, manual, profile of the day, next change with its UTC offset; nothing about the next change while the clock is not set |
@@ -73,6 +76,8 @@ tool (`guishot`, BUILD.md §3.3) is not a test: it only renders the pages.
 | `chronoProgram` | `<zone>/chrono/profile/set` accepted: slots sorted and rounded to 0.5, `holiday_days` ignored, chrono off with an empty weekday profile, eight slots, `{"reset":true}` |
 | `chronoProgramInvalid` | 15 refused payloads (not JSON, array, `reset` false, `enabled` missing or not a bool, profile missing, on without weekday slots, time `6:30` or `24:00`, slot not an object, `temp` as a string, out of 5…25, time twice, nine slots): refused with a reason, program untouched; topic matching of `chrono/profile/set` |
 | `chronoSwitchDiscovery` | Home Assistant chrono switch: topics, payloads, availability, same device as the zone climate |
+| `subscriptions` | the filters and their QoS (1 except `homeassistant/status`): commands, readings and `RoomSense/status` subscribed, none of the controller's own topics |
+| `refusedWhenRetained` | commands (`set_temp`, `chrono/set`, `chrono/profile/set`, `mode/set`) and readings refused when retained; states, status, weather, `homeassistant/status` accepted |
 | `parseOnOff` | `on`/`off` in any case, with spaces; anything else refused |
 
 ### 2.4 `tst_netinfo`: network row of the GUI
@@ -230,12 +235,14 @@ Without network: the messages are read from the notifier signals.
 
 | Test | Checks |
 |---|---|
-| `config` | `[TELEGRAM]`; no allowed chat = disabled; trailing `/` of `api_url` removed |
+| `config` | `[TELEGRAM]`; no allowed chat = disabled; trailing `/` of `api_url` removed; `gateway_down_min` and its default |
 | `cleanExitFlag` | first start, crash, clean exit told apart |
 | `startMessages` | start message: first start, not stopped cleanly, serial port closed |
 | `zoneAlarmsOnTransitions` | sensor lost/back, relay fault/ok, frost mode on/off: one message per change |
 | `batteryHysteresis` | battery low at 15 %, OK again only well above; 0 = not reported |
 | `systemAlarms` | Modbus board offline/online, serial port lost/open, MQTT down only after `mqtt_down_min` |
+| `gatewayAlarm` | RoomSense offline: alarm only after `gateway_down_min`, in `/status` and the active alarms; broker lost meanwhile: the alarm stays until online; a short restart, or offline then the broker lost: no message |
+| `windowMessages` | window open and closed texts; information, not in the reminders |
 | `reminder` | reminder of the alarms still active |
 | `commands` | `/status`, `/status@bot`, `/zone`, unknown zone, `/today` without relay log, unknown text |
 | `onTimeFromRelayLog` | ON time of today from the relay log (skipped in the first 2 h after midnight) |
@@ -258,6 +265,25 @@ Without network: the messages are read from the notifier signals.
 
 Runs last: it installs the file log handler for the rest of the process.
 
+### 2.15 `tst_window`: open window detection
+
+`WindowDetector` with explicit times, `WindowWatch` on zones `a` and `b`
+with `MonoClock::advanceForTest()`; defaults 1.0 °C within 10 min, closed
+after 0.3 °C.
+
+| Test | Checks |
+|---|---|
+| `config` | `[WINDOW_DETECTION]` defaults, values, out of range values |
+| `dropOpens` | 21.0 → 20.0 in 6 min: open, with the highest reading and its time |
+| `slowCoolingIgnored` | 1.2 °C in 30 min (heating off): nothing |
+| `oldReadingsForgotten` | a high reading older than 10 min does not count |
+| `closesOnRise` | still falling: open; +0.3 above the lowest: closed; the readings before the drop do not open it again, a new drop does |
+| `reset` | reset forgets the open state and the history |
+| `watchSignals` | `windowOpened` (zone, from, to, minutes) and `windowClosed` (lowest, minutes) |
+| `sensorLostResets` | a lost sensor resets its zone, no closed message |
+| `suspendedInWindowMode` | nothing during the house mode `window`, nor from its readings afterwards |
+| `disabled` | `enabled=false`: never a signal |
+
 ---
 
 ## 3. End to end: `tools/e2e.sh`
@@ -275,18 +301,19 @@ Configuration: zones `salotto` (setpoint 17, relay 5, no chrono) and
 `camera` (20, relay 4, chrono 00:00 19 °C), minimum cycle 0, log and
 relay log on, Telegram on with chat 111 allowed.
 
-Sequence (about 15 s): start → reading 15.0 °C for `salotto` →
-`salotto/set_temp 14` → `camera/set_temp 30` → `camera/chrono/set off` →
-Telegram `/status` from chat 111 and from chat 999 → an invalid chrono
+Sequence (about 15 s): `salotto/set_temp 22`, a `camera` reading and
+`RoomSense/status offline` published **retained** before the start → start → reading 15.0 °C for `salotto` →
+`camera` reading `"nan"` and `camera/set_temp nan` → `camera` readings 20.0, 18.8, 19.2 °C → `salotto/set_temp 14` → `camera/set_temp 30` → `camera/chrono/set off` →
+Telegram `/status` from chat 111 and from chat 999 → `RoomSense/status online` → an invalid chrono
 program for `salotto` (30 °C) → a valid one (00:00 16 °C) → SIGTERM.
 
 | Group | Checks |
 |---|---|
-| startup | Home Assistant discovery; `status online`; weather disabled: outdoor sensors removed; all relays OFF at start |
-| regulation | 15 < 17 − 0.5: relay 5 ON, `state_mode heat`; `set_temp 14`: `state_temp 14`, `state_mode off`; `set_temp 30` clamped to 25 |
+| startup | Home Assistant discovery; `status online`; weather disabled: outdoor sensors removed; all relays OFF at start; the retained `set_temp` and reading ignored (log), `state_temp 22` never published; RoomSense offline at the start, online again (log) |
+| regulation | 15 < 17 − 0.5: relay 5 ON, `state_mode heat`; `set_temp 14`: `state_temp 14`, `state_mode off`; `set_temp 30` clamped to 25; temperature and `set_temp` `nan` refused (log) |
 | chrono | chrono switch discovery and climate attributes; slot applied (`state_temp 19`); chrono state with next change; manual after `set_temp`; off from Home Assistant; zone without chrono: off; program published at connect; invalid program refused (log); program from MQTT published with `edited` true, applied (`state_temp 16`) and logged "over MQTT" |
 | shutdown | relays confirmed OFF; `status offline`; setpoint and chrono program in `state.ini`; `setting.ini` not written; log file; relay log ON/OFF lines with duration |
-| telegram | start and stop messages; `/status` answered; chat 999 ignored; the bot token never in the logs; exit code 0 |
+| telegram | start and stop messages; `/status` answered, with RoomSense OFFLINE; camera window open (20.0 → 18.8) and closed again; chat 999 ignored; the bot token never in the logs; exit code 0 |
 
 On failure the script prints the application log. With
 `E2E_KEEP_RELAYLOG=<file>` it keeps the relay log produced.

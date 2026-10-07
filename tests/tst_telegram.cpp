@@ -68,13 +68,15 @@ private slots:
         QTemporaryDir dir2;
         TelegramConfig tc = Configuration(TestUtil::writeIni(dir2,
             "[TELEGRAM]\nenabled=true\ntoken=123:ABC\nallowed_chats=111, -222\nname=Casa\n"
-            "reminder_h=2\nmqtt_down_min=5\napi_url=http://127.0.0.1:1/\n")).loadTelegram();
+            "reminder_h=2\nmqtt_down_min=5\ngateway_down_min=3\napi_url=http://127.0.0.1:1/\n")).loadTelegram();
         QVERIFY(tc.enabled);
         QCOMPARE(tc.token, QString("123:ABC"));
         QCOMPARE(tc.allowedChats, QList<qint64>() << 111 << -222);
         QCOMPARE(tc.name, QString("Casa"));
         QCOMPARE(tc.reminderH, 2);
         QCOMPARE(tc.mqttDownMin, 5);
+        QCOMPARE(tc.gatewayDownMin, 3);
+        QCOMPARE(off.gatewayDownMin, 2);        /* default */
         QCOMPARE(tc.apiUrl, QString("http://127.0.0.1:1"));    /* trailing / removed */
     }
 
@@ -168,6 +170,49 @@ private slots:
         m_tg->setMqttConnected(false);          /* short drop: no message */
         m_tg->setMqttConnected(true);
         QCOMPARE(m_out->count(), before + 2);
+    }
+
+    void gatewayAlarm()
+    {
+        /* offline: alarm only after gateway_down_min (a restart is shorter) */
+        m_tg->setGatewayState(GatewayOnline);
+        m_tg->setGatewayState(GatewayOffline);
+        QMetaObject::invokeMethod(m_tg, "onGatewayDown");
+        QCOMPARE(m_out->count(), 1);
+        QVERIFY(last().contains("RoomSense gateway OFFLINE for 2 min"));
+        m_tg->onCommand(111, "/status");
+        QVERIFY(lastReply().contains("RoomSense OFFLINE"));
+        QVERIFY(lastReply().contains("Alarms: RoomSense offline."));
+
+        /* broker lost meanwhile: unknown, the alarm stays until online */
+        m_tg->setGatewayState(GatewayUnknown);
+        m_tg->setGatewayState(GatewayOffline);
+        QCOMPARE(m_out->count(), 1);
+        m_tg->setGatewayState(GatewayOnline);
+        QCOMPARE(m_out->count(), 2);
+        QVERIFY(last().contains("RoomSense gateway online again"));
+
+        /* short restart: no message */
+        m_tg->setGatewayState(GatewayOffline);
+        m_tg->setGatewayState(GatewayOnline);
+        QMetaObject::invokeMethod(m_tg, "onGatewayDown");
+        QCOMPARE(m_out->count(), 2);
+
+        /* offline, then the broker lost before the timeout: no alarm */
+        m_tg->setGatewayState(GatewayOffline);
+        m_tg->setGatewayState(GatewayUnknown);
+        QMetaObject::invokeMethod(m_tg, "onGatewayDown");
+        QCOMPARE(m_out->count(), 2);
+    }
+
+    void windowMessages()
+    {
+        m_tg->onWindowOpened(1, 21.0, 19.9, 5);
+        QVERIFY(last().contains("Camera: window open? Temperature 21.0 -> 19.9°C in 5 min."));
+        m_tg->onWindowClosed(1, 19.5, 15);
+        QVERIFY(last().contains("Camera: temperature rising again, window closed? (lowest 19.5°C, 15 min after the drop)"));
+        QMetaObject::invokeMethod(m_tg, "remind");
+        QCOMPARE(m_out->count(), 2);            /* information, not an alarm */
     }
 
     void reminder()

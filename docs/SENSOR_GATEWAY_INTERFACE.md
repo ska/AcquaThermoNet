@@ -14,9 +14,13 @@ switches the whole house to the "windows open", "away" or "boost" mode
 (§8), and shows and edits the chrono thermostat program of each zone
 (§9).
 
-Interface version: matches AcquaThermoNet **2.4.0**. The readings are
-unchanged since 2.1.0; the setpoint commands of §7 use topics the
-controller handles since 2.2.2; the house mode of §8 needs 2.3.0; the
+Interface version: matches AcquaThermoNet **3.0.0** and RoomSense
+**3.0.0**, to be installed together: since 3.0.0 the readings are on
+`RoomSense/<zone>/data` (before: `RoomSense/apartment/<zone>/data`), the
+controller refuses implausible temperatures and ignores retained
+commands and readings, and it follows `RoomSense/status`. The reading
+fields are unchanged since 2.1.0; the setpoint commands of §7 use topics
+the controller handles since 2.2.2; the house mode of §8 needs 2.3.0; the
 chrono thermostat of §9 needs 2.4.0 (it also changes the setpoints on its
 own, §7).
 
@@ -38,7 +42,7 @@ flowchart LR
     PLANT["Pumps and<br/>zone valves"]
 
     BLE1 & BLE2 & BLEn -- "BLE advertising" --> GW
-    GW -- "RoomSense/apartment/ZONE/data<br/>AcquaThermoNet/ZONE/set_temp<br/>AcquaThermoNet/mode/set<br/>ZONE/chrono/set, ZONE/chrono/profile/set" --> B
+    GW -- "RoomSense/ZONE/data<br/>AcquaThermoNet/ZONE/set_temp<br/>AcquaThermoNet/mode/set<br/>ZONE/chrono/set, ZONE/chrono/profile/set" --> B
     B -- "AcquaThermoNet/status, ZONE/state_temp, ZONE/state_mode<br/>mode/state, ZONE/chrono, ZONE/chrono/profile" --> GW
     B <--> ATN
     B --> HA
@@ -48,8 +52,8 @@ flowchart LR
 | | RoomSense (sensor gateway) | AcquaThermoNet |
 |---|---|---|
 | Owns | BLE scanning, decoding, sensor → zone mapping, filtering; the house panel | zones, **setpoints** (the only source of truth), **house mode** (saved setpoints, timer, restore), **chrono programs**, regulation, relays |
-| Publishes | one reading per zone on `RoomSense/apartment/<zone>/data`; setpoint commands on `AcquaThermoNet/<zone>/set_temp` (§7); mode commands on `AcquaThermoNet/mode/set` (§8); chrono commands on `AcquaThermoNet/<zone>/chrono/set` and `…/chrono/profile/set` (§9) | its own topics under `AcquaThermoNet/…` |
-| Subscribes | `AcquaThermoNet/status`, `AcquaThermoNet/<zone>/state_temp`, `…/state_mode` (§7), `AcquaThermoNet/mode/state` (§8), `AcquaThermoNet/<zone>/chrono`, `…/chrono/profile` (§9) | `RoomSense/apartment/#`, `AcquaThermoNet/#` |
+| Publishes | one reading per zone on `RoomSense/<zone>/data`; setpoint commands on `AcquaThermoNet/<zone>/set_temp` (§7); mode commands on `AcquaThermoNet/mode/set` (§8); chrono commands on `AcquaThermoNet/<zone>/chrono/set` and `…/chrono/profile/set` (§9) | its own topics under `AcquaThermoNet/…` |
+| Subscribes | `AcquaThermoNet/status`, `AcquaThermoNet/<zone>/state_temp`, `…/state_mode` (§7), `AcquaThermoNet/mode/state` (§8), `AcquaThermoNet/<zone>/chrono`, `…/chrono/profile` (§9) | `RoomSense/+/data`, `AcquaThermoNet/#` |
 
 The two applications never talk directly: only through the broker. For
 the readings there is no request/response, no acknowledgement: the gateway
@@ -65,12 +69,12 @@ entities point to it), and sends setpoints the same way as the panel.
 | Item | Value |
 |---|---|
 | Protocol | MQTT 3.1.1, same broker as AcquaThermoNet (plain 1883 or TLS 8883) |
-| Topic | `RoomSense/apartment/<zone>/data` (fixed prefix, case sensitive) |
+| Topic | `RoomSense/<zone>/data` (fixed prefix, case sensitive) |
 | `<zone>` | exactly a zone name configured in AcquaThermoNet (`[ZONES] list`), charset `[A-Za-z0-9_-]` |
 | Payload | UTF-8 JSON object, one reading |
 | Required field | `temperature` (°C) |
 | Optional fields | `humidity`, `battery`, `battmv`, `data_time`, `mac`; extra fields are ignored |
-| QoS | 0 or 1 (the controller subscribes at QoS 0) |
+| QoS | 0 or 1 (the controller subscribes at QoS 1) |
 | Retain | **false** (see §6) |
 | Rate | every 60–300 s per zone; **never** less often than every 15 min |
 | Stale data | **stop publishing** a zone whose sensor is no longer heard |
@@ -84,10 +88,12 @@ entities point to it), and sends setpoints the same way as the panel.
 ## 3. Topic
 
 ```
-RoomSense/apartment/<zone>/data
+RoomSense/<zone>/data
 ```
 
-- `RoomSense/apartment` is a fixed prefix in AcquaThermoNet: use it verbatim.
+- `RoomSense` is a fixed prefix in AcquaThermoNet: use it verbatim. The
+  readings were on `RoomSense/apartment/<zone>/data` up to 2.4.0: update
+  both applications together.
 - `<zone>` must match, **case sensitive**, one of the zone names configured
   in the controller. Today's installation uses:
 
@@ -105,8 +111,8 @@ RoomSense/apartment/<zone>/data
   are the only shared configuration between the two applications. Make
   them a configuration item of the gateway (sensor MAC → zone name), never
   hard-coded.
-- The last level must be `data`. Anything else under
-  `RoomSense/apartment/` is ignored by the controller, as are zone names it
+- The last level must be `data`. Anything else under `RoomSense/`
+  (e.g. `RoomSense/status`) is ignored by the controller, as are zone names it
   does not know (silently).
 
 **One topic = one zone = one temperature.** If a zone has several sensors,
@@ -149,13 +155,15 @@ Minimal valid message:
 
 Rules applied by the controller:
 
-- The message must be a **JSON object** with a valid `temperature`,
-  otherwise it is rejected and logged (`Invalid sensor data for zone …`).
+- The message must be a **JSON object** with a valid `temperature`
+  within −30…60 °C, otherwise it is rejected and logged (`Invalid sensor
+  data for zone …`).
   A rejected message does **not** refresh the zone.
 - Numbers may be JSON numbers or strings containing a number (both
-  `20.4` and `"20.4"` work). Prefer JSON numbers.
-- An optional field that is missing keeps its previous value. Send all the
-  fields you have in every message.
+  `20.4` and `"20.4"` work). Prefer JSON numbers. `"nan"` and `"inf"`
+  are not numbers.
+- An optional field that is missing, or outside its range, keeps its
+  previous value. Send all the fields you have in every message.
 - `battery`: `0` means *unknown* (no alarm). If the battery level is not
   known, **omit** the field rather than sending 0. Below 20 % the controller
   raises a "battery low" alarm (panel and Telegram), cleared from 30 %.
@@ -167,9 +175,10 @@ Rules applied by the controller:
 
 ### 4.3 Plausibility
 
-The controller does **not** range-check the temperature: a decoding error
-such as `85.0` or `-40.0` would switch a zone OFF or ON. The gateway must
-drop implausible readings instead of publishing them, e.g.:
+The controller only refuses a temperature outside −30…60 °C (a decoding
+error such as `85.0` or `-40.0`); anything within it switches the zone ON
+or OFF. The gateway must drop implausible readings instead of publishing
+them, e.g.:
 
 - outside −20…50 °C;
 - a jump of more than ~3 °C from the previous reading of the same sensor
@@ -221,7 +230,7 @@ sequenceDiagram
     participant ATN as AcquaThermoNet
 
     S->>GW: advertisement 20.4 °C
-    GW->>B: RoomSense/apartment/salotto/data, temperature 20.4
+    GW->>B: RoomSense/salotto/data, temperature 20.4
     B->>ATN: message, zone timer restarted (15 min)
     ATN->>ATN: regulation (ON below setpoint - 0.5, OFF above setpoint)
     Note over S: battery dead, no more advertisements
@@ -246,19 +255,20 @@ more frequent than about one per minute do not improve the regulation.
 |---|---|---|
 | Client id | unique and stable, e.g. `RoomSense-<host>` | must not collide with `AcquaThermoNet-…` |
 | Credentials / TLS | the broker's; same `ca_file` rules as the controller if TLS | |
-| QoS | 0 or 1 | the controller subscribes at QoS 0; QoS 1 only helps up to the broker |
-| **Retain** | **false** | a retained reading is delivered again when the controller restarts, and it counts as fresh (§5): a dead sensor would regulate its zone for 15 more minutes on an old value |
+| QoS | 1 | the controller subscribes at QoS 1: at least once end to end |
+| **Retain** | **false** | a retained reading is delivered again when the controller restarts, and it would count as fresh (§5): a dead sensor would regulate its zone for 15 more minutes on an old value. The controller ignores a reading delivered retained (logged `Retained message ignored on …`) |
 | Keepalive | 30–60 s | |
 | Reconnect | automatic, with backoff | buffered readings older than ~1 min should be dropped, not sent late |
 
-Recommended (not read by the controller today, useful for diagnostics and
-Home Assistant): gateway availability with a Will message.
+Gateway availability with a Will message. The controller shows `RoomSense
+OFFLINE` and, after `gateway_down_min` (2 min), raises one Telegram alarm,
+long before the sensor timeout of each zone.
 
 | Topic | Payload | Retain |
 |---|---|---|
 | `RoomSense/status` | `online` at connect, `offline` as Will | yes |
 
-Do **not** put it under `RoomSense/apartment/`. Under `AcquaThermoNet/`
+It has no `/data` level, so it is never taken for a zone. Under `AcquaThermoNet/`
 publish only the setpoint commands of §7 (`AcquaThermoNet/<zone>/set_temp`),
 and nothing under `homeassistant/climate/`: those topics belong to the
 controller.
@@ -284,11 +294,12 @@ Rules for the gateway:
 
 1. **Only `set_temp`** (and `mode/set`, §8, `chrono/set` and
    `chrono/profile/set`, §9). Never publish `state_temp`, `state_mode`,
-   `set_mode`, `mode/state`, `chrono`, `chrono/profile` or
+   `mode/state`, `chrono`, `chrono/profile` or
    `AcquaThermoNet/status`.
 2. **Retain false.** A retained command would be applied again at every
    controller restart, undoing the changes made since then from its panel
-   or Home Assistant.
+   or Home Assistant. The controller ignores a command delivered retained
+   (logged `Retained message ignored on …`).
 3. **Show the confirmed value.** After a command show the new value as
    pending until `state_temp` arrives; without it within ~5 s, show the
    last `state_temp` again (command lost or controller busy).
@@ -583,7 +594,7 @@ With `mosquitto_pub` (or the gateway itself), against the real broker:
 ```sh
 # one reading for the living room
 mosquitto_pub -h <broker> -u <user> -P <password> \
-  -t RoomSense/apartment/salotto/data \
+  -t RoomSense/salotto/data \
   -m '{"temperature":20.4,"humidity":48,"battery":85}'
 
 # watch what the gateway publishes
@@ -641,7 +652,7 @@ and how long ago it arrived.
 
 ## 11. Acceptance checklist for RoomSense
 
-- [ ] Topic `RoomSense/apartment/<zone>/data`, zone names from configuration, exact case
+- [ ] Topic `RoomSense/<zone>/data`, zone names from configuration, exact case
 - [ ] JSON object with numeric `temperature` in °C in every message
 - [ ] `humidity` and `battery` (1–100 %) sent when known, `battery` omitted when unknown
 - [ ] Implausible readings dropped (range, jumps, decode errors)
@@ -649,7 +660,7 @@ and how long ago it arrived.
 - [ ] **No message** for a zone whose sensor is not heard (no cached republishing)
 - [ ] Retain false; no stale buffered readings sent after a reconnect
 - [ ] Several sensors in one zone combined into one value by the gateway
-- [ ] Own client id; optional `RoomSense/status` availability with Will
+- [ ] Own client id; `RoomSense/status` availability with Will, retained
 - [ ] Under `AcquaThermoNet/` only `…/<zone>/set_temp` (plain number), `mode/set` (`normal`/`window`/`away`/`boost`), `…/<zone>/chrono/set` (`on`/`off`) and `…/<zone>/chrono/profile/set` (JSON), all retain false; nothing under `homeassistant/`
 - [ ] Setpoints shown from the retained `state_temp`, pending until confirmed; no commands while the controller is offline
 - [ ] House mode shown from the retained `mode/state`, pending until confirmed, `remaining_s` counted down locally; zone −/+ disabled while a mode is active
@@ -666,4 +677,5 @@ and the chrono limits are defined in AcquaThermoNet (`climatezones.h`,
 `[CHRONO]`). Any change on either side (new zone, renamed zone,
 different topic or field) must be agreed and made in both applications at
 the same time; a new zone also needs its relay configured in the
-controller. Full controller documentation: [`DOCUMENTATION.md`](DOCUMENTATION.md).
+controller. Full controller documentation: [`DOCUMENTATION.md`](DOCUMENTATION.md);
+all the topics and payloads on one page: [`MQTT_TOPICS.md`](MQTT_TOPICS.md).

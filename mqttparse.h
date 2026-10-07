@@ -13,18 +13,40 @@ namespace MqttParse
     /* Match "<base>/<zone>/<tail>" and extract <zone> (no '/' inside) */
     bool matchZoneTopic(const QString &topic, const QString &base, const QString &tail, QString &zoneName);
 
-    /* Number sent either as JSON number or as string */
+    /* Number sent either as JSON number or as string; nan and inf refused */
     bool jsonNumber(const QJsonObject &obj, const char *key, double &out);
 
     /* RoomSense JSON into the sensor fields of data. "temperature" is required,
-     * missing optional fields keep their value. On error data is untouched. */
+     * SENSOR_TEMP_MIN..SENSOR_TEMP_MAX; missing or out of range optional
+     * fields keep their value. On error data is untouched. */
     bool sensorJson(const QByteArray &message, ZoneData &data, QString *error = nullptr);
+
+    /* set_temp payload: a plain finite number (rounded and clamped later) */
+    bool parseSetPoint(const QByteArray &payload, double &temp);
+
+    /* A command (set_temp, chrono/set, chrono/profile/set, mode/set) or a
+     * RoomSense reading: never valid when retained. A retained command would
+     * be applied again at every connection, a retained reading would count
+     * as fresh for a sensor that may be dead (interface §6). */
+    bool refusedWhenRetained(const QString &topic);
 
     struct Message
     {
         QString     topic;
         QByteArray  payload;
     };
+
+    struct Subscription
+    {
+        QString     filter;
+        quint8      qos;
+    };
+
+    /* What the controller subscribes to: the commands, the readings and
+     * the RoomSense availability at QoS 1 (at least once up to here, as
+     * they are sent), homeassistant/status at QoS 0. Not its own topics:
+     * nothing it publishes comes back. */
+    QVector<Subscription> subscriptions();
 
     /* WEATHER_TOPIC payload: {"location":"…","source":"met.no","temperature":12.3,
      * "humidity":70,"pressure":1015,"wind_speed":3.1,"precipitation":0.2} */

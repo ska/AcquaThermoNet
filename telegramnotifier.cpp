@@ -1,12 +1,14 @@
 #include "telegramnotifier.h"
 #include "logging.h"
 #include "monoclock.h"
+#include "climatezones.h"
 #include "relaylog.h"
 #include <QDateTime>
 
 static const char ICON_ALARM[] = u8"⚠️";     /* warning sign */
 static const char ICON_OK[]    = u8"✅";           /* check mark */
 static const char ICON_INFO[]  = u8"ℹ️";     /* information */
+static const char ICON_WINDOW[] = u8"\U0001FA9F";    /* window */
 
 /**
  * @brief TelegramNotifier::TelegramNotifier
@@ -25,6 +27,8 @@ TelegramNotifier::TelegramNotifier(ZoneModel *zones, const TelegramConfig &confi
     m_serialKnown(false),
     m_mqttConnected(false),
     m_mqttAlarm(false),
+    m_gatewayState(GatewayUnknown),
+    m_gatewayAlarm(false),
     m_weatherKnown(false),
     m_startMs(MonoClock::nowMs())
 {
@@ -41,6 +45,11 @@ TelegramNotifier::TelegramNotifier(ZoneModel *zones, const TelegramConfig &confi
     m_mqttDownTimer->setSingleShot(true);
     connect(m_mqttDownTimer, &QTimer::timeout, this, &TelegramNotifier::onMqttDown);
     m_mqttDownTimer->start(m_config.mqttDownMin * 60 * 1000);
+
+    /* RoomSense offline: a restart (start.sh loop, update) is shorter */
+    m_gatewayDownTimer = new QTimer(this);
+    m_gatewayDownTimer->setSingleShot(true);
+    connect(m_gatewayDownTimer, &QTimer::timeout, this, &TelegramNotifier::onGatewayDown);
 }
 
 /**
@@ -203,6 +212,51 @@ void TelegramNotifier::onMqttDown()
                                         .arg(m_config.mqttDownMin)));
 }
 
+void TelegramNotifier::setGatewayState(int state)
+{
+    if(state == m_gatewayState)
+        return;
+    m_gatewayState = state;
+
+    if(state == GatewayOnline)
+    {
+        m_gatewayDownTimer->stop();
+        if(m_gatewayAlarm)
+        {
+            m_gatewayAlarm = false;
+            emit broadcast(stamp(ICON_OK, "RoomSense gateway online again."));
+        }
+    }
+    else if(state == GatewayOffline)
+    {
+        if(!m_gatewayAlarm && !m_gatewayDownTimer->isActive())
+            m_gatewayDownTimer->start(m_config.gatewayDownMin * 60 * 1000);
+    }
+    else
+        m_gatewayDownTimer->stop();     /* broker down: told by the MQTT alarm */
+}
+
+void TelegramNotifier::onGatewayDown()
+{
+    if(m_gatewayState != GatewayOffline || m_gatewayAlarm)
+        return;
+    m_gatewayAlarm = true;
+    emit broadcast(stamp(ICON_ALARM, QString("RoomSense gateway OFFLINE for %1 min: no sensor data, "
+                                             "the zones go OFF after the sensor timeout.").arg(m_config.gatewayDownMin)));
+}
+
+void TelegramNotifier::onWindowOpened(int zone, double fromTemp, double toTemp, int minutes)
+{
+    emit broadcast(stamp(ICON_WINDOW, QString("%1: window open? Temperature %2 -> %3°C in %4 min.")
+                                          .arg(zoneName(zone)).arg(fromTemp, 0, 'f', 1).arg(toTemp, 0, 'f', 1).arg(minutes)));
+}
+
+void TelegramNotifier::onWindowClosed(int zone, double lowestTemp, int minutes)
+{
+    emit broadcast(stamp(ICON_WINDOW, QString("%1: temperature rising again, window closed? (lowest %2°C, %3 min after the drop)")
+                                          .arg(zoneName(zone)).arg(lowestTemp, 0, 'f', 1).arg(minutes)));
+}
+
 void TelegramNotifier::setWeather(weather_t info)
 {
     m_weather = info;
@@ -218,6 +272,8 @@ QStringList TelegramNotifier::activeAlarms() const
         out << "serial port closed";
     if(m_mqttAlarm)
         out << "MQTT not connected";
+    if(m_gatewayAlarm)
+        out << "RoomSense offline";
     for(int zone=0; zone<m_alarms.size(); zone++)
     {
         const ZoneAlarms &a = m_alarms[zone];
@@ -253,9 +309,11 @@ QString TelegramNotifier::statusText() const
     QStringList l;
     l << QString("%1 %2, up %3").arg(m_config.name, SW_VER, duration((MonoClock::nowMs() - m_startMs) / 1000));
 
-    QString sys = QString("MQTT %1 | Modbus %2").arg(m_mqttConnected ? "connected" : "NOT connected",
-                                                     m_serialKnown && m_serialClosed ? "port CLOSED"
-                                                                                     : (m_modbusOffline ? "OFFLINE" : "online"));
+    const char *gateway = m_gatewayState == GatewayOnline ? "online"
+                        : (m_gatewayState == GatewayOffline ? "OFFLINE" : "unknown");
+    QString sys = QString("MQTT %1 | RoomSense %2 | Modbus %3").arg(m_mqttConnected ? "connected" : "NOT connected", gateway,
+                                                                    m_serialKnown && m_serialClosed ? "port CLOSED"
+                                                                                                    : (m_modbusOffline ? "OFFLINE" : "online"));
     if(m_weatherKnown)
         sys += QString(" | outdoor %1 %2°C").arg(m_weather.comune).arg(m_weather.temp, 0, 'f', 1);
     if(m_zones->houseMode() == ZoneModel::ModeWindow)

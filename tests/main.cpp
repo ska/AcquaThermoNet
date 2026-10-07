@@ -15,6 +15,7 @@ int runRegulationTests(int argc, char *argv[]);
 int runRelayLogTests(int argc, char *argv[]);
 int runTelegramTests(int argc, char *argv[]);
 int runWeatherTests(int argc, char *argv[]);
+int runWindowTests(int argc, char *argv[]);
 int runZoneModelTests(int argc, char *argv[]);
 
 int main(int argc, char *argv[])
@@ -35,6 +36,7 @@ int main(int argc, char *argv[])
     failed += runRelayLogTests(argc, argv);
     failed += runTelegramTests(argc, argv);
     failed += runWeatherTests(argc, argv);
+    failed += runWindowTests(argc, argv);
     /* Last: installs the file log handler for the rest of the process */
     failed += runLoggingTests(argc, argv);
 

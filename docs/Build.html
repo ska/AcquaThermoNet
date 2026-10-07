@@ -132,7 +132,7 @@ ls dist/</code></pre>
 <h3 id="24-qmake-options">2.4 qmake options</h3>
 <div class="table"><table><thead><tr><th>Option</th><th>Effect</th></tr></thead><tbody><tr><td><code>CONFIG+=tests</code></td><td>also build the unit tests (<code>tests/tests</code>)</td></tr><tr><td><code>CONFIG+=tools</code></td><td>also build <code>guishot</code>, the GUI screenshot tool (desktop)</td></tr><tr><td><code>CONFIG+=package</code></td><td>desktop: make the package zip too</td></tr><tr><td><code>CONFIG+=nopackage</code></td><td>ARM: no package zip</td></tr></tbody></table></div>
 <h3 id="25-version">2.5 Version</h3>
-<p>The version comes from the latest git tag <code>vX.Y.Z</code> <strong>when qmake runs</strong>: <code>2.4.0</code> exactly at the tag, <code>2.4.0-&lt;hash&gt;</code> after it, <code>0.0.0</code> without a tag. Rerun qmake after a commit or a tag, or the binary and the zip keep the old version.</p>
+<p>The version comes from the latest git tag <code>vX.Y.Z</code> <strong>when qmake runs</strong>: <code>3.0.0</code> exactly at the tag, <code>3.0.0-&lt;hash&gt;</code> after it, <code>0.0.0</code> without a tag. Rerun qmake after a commit or a tag, or the binary and the zip keep the old version.</p>
 </section><section id="3-tests">
 <h2 id="3-tests">3. Tests</h2>
 <p>What each test checks: <a href="TESTING.md"><code>TESTING.md</code></a>.</p>
@@ -163,13 +163,13 @@ dist/AcquaThermoNet_Arm32_&lt;version&gt;.debug           not stripped, keep it 
     --strip arm-poky-linux-gnueabi-strip</code></pre>
 <h3 id="42-release-package">4.2 Release package</h3>
 <p>A package to keep or install is built from a <strong>tag</strong>, in a clean checkout, so that the version is exactly the tag (after it: <code>-&lt;hash&gt;</code>; the application banner also says <code>-dirty</code> with uncommitted changes):</p>
-<pre class="code"><code class="lang-sh">git -C $ATN worktree add /tmp/atn-v2.4.0 v2.4.0
-cd /tmp/atn-v2.4.0 &amp;&amp; git submodule update --init
+<pre class="code"><code class="lang-sh">git -C $ATN worktree add /tmp/atn-v3.0.0 v3.0.0
+cd /tmp/atn-v3.0.0 &amp;&amp; git submodule update --init
 source /home/devel/Sviluppi/Sdk/1.3.4-un60/environment-setup-cortexa8hf-neon-poky-linux-gnueabi
 mkdir build &amp;&amp; cd build &amp;&amp; qmake ../AcquaThermoNet.pro &amp;&amp; make -j$(nproc)</code></pre>
 <p>Before installing, check:</p>
-<div class="table"><table><thead><tr><th>Check</th><th>Command</th><th>Expected</th></tr></thead><tbody><tr><td>version</td><td><code>unzip -p dist/*.zip package.info</code></td><td><code>&lt;version&gt;2.4.0&lt;/version&gt;</code>, no hash</td></tr><tr><td>CPU</td><td>`readelf -A bin_arm/AcquaThermoNet \</td><td>grep Tag_CPU_name`</td><td><code>"7-A"</code></td></tr><tr><td>stripped</td><td><code>unzip -l dist/*.zip</code></td><td><code>deploy/AcquaThermoNet</code> about 0.6 MB (17 MB not stripped)</td></tr><tr><td>checksum</td><td><code>(cd dist &amp;&amp; sha256sum *.zip &gt; AcquaThermoNet_Package_Arm32_2.4.0.zip.sha256)</code></td><td>kept with the zip</td></tr></tbody></table></div>
-<p>Then store the zip and the <code>.debug</code> together, and remove the worktree (<code>git -C $ATN worktree remove /tmp/atn-v2.4.0</code>).</p>
+<div class="table"><table><thead><tr><th>Check</th><th>Command</th><th>Expected</th></tr></thead><tbody><tr><td>version</td><td><code>unzip -p dist/*.zip package.info</code></td><td><code>&lt;version&gt;3.0.0&lt;/version&gt;</code>, no hash</td></tr><tr><td>CPU</td><td>`readelf -A bin_arm/AcquaThermoNet \</td><td>grep Tag_CPU_name`</td><td><code>"7-A"</code></td></tr><tr><td>stripped</td><td><code>unzip -l dist/*.zip</code></td><td><code>deploy/AcquaThermoNet</code> about 0.6 MB (17 MB not stripped)</td></tr><tr><td>checksum</td><td><code>(cd dist &amp;&amp; sha256sum *.zip &gt; AcquaThermoNet_Package_Arm32_3.0.0.zip.sha256)</code></td><td>kept with the zip</td></tr></tbody></table></div>
+<p>Then store the zip and the <code>.debug</code> together, and remove the worktree (<code>git -C $ATN worktree remove /tmp/atn-v3.0.0</code>).</p>
 <h3 id="43-install">4.3 Install</h3>
 <p>Copy the zip to the panel and install it from the launcher. An update keeps <code>setting.ini</code>, <code>state.ini</code> and <code>log/</code> (saved by <code>uninstall.sh</code>, restored by <code>install.sh</code>). On a first install the application creates <code>setting.ini</code> from <code>setting.default.ini</code>: edit it (broker, zones, relays, serial port) and restart.</p></section>
 </main>

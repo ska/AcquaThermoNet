@@ -1,5 +1,6 @@
 #include "mqttparse.h"
 #include <algorithm>
+#include <QtNumeric>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include "climatezones.h"
@@ -43,13 +44,25 @@ bool MqttParse::jsonNumber(const QJsonObject &obj, const char *key, double &out)
     }
     if( v.isString() )
     {
+        /* QString::toDouble accepts "nan" and "inf" */
         bool ok;
         const double d = v.toString().toDouble(&ok);
-        if( ok )
-            out = d;
-        return ok;
+        if( !ok || !qIsFinite(d) )
+            return false;
+        out = d;
+        return true;
     }
     return false;
+}
+
+/* Optional field: present and within min..max */
+static bool jsonInRange(const QJsonObject &obj, const char *key, double min, double max, double &out)
+{
+    double v;
+    if( !MqttParse::jsonNumber(obj, key, v) || v < min || v > max )
+        return false;
+    out = v;
+    return true;
 }
 
 /**
@@ -79,19 +92,82 @@ bool MqttParse::sensorJson(const QByteArray &message, ZoneData &data, QString *e
         return false;
     }
 
+    /* the regulation compares it with the setpoint: a wrong value would
+     * switch the zone, and the zone would not even be seen as missing */
+    if( temp < SENSOR_TEMP_MIN || temp > SENSOR_TEMP_MAX )
+    {
+        if( error )
+            *error = QString("temperature %1 outside %2...%3").arg(temp).arg(SENSOR_TEMP_MIN).arg(SENSOR_TEMP_MAX);
+        return false;
+    }
+
     double value;
     data.temp = temp;
     if( obj.contains("mac") )
         data.mac = obj["mac"].toString();
-    if( jsonNumber(obj, "data_time", value) )
+    if( jsonInRange(obj, "data_time", 0, 4294967295.0, value) )
         data.unixTime = value;
-    if( jsonNumber(obj, "humidity", value) )
+    if( jsonInRange(obj, "humidity", 0, 100, value) )
         data.humidity = value;
-    if( jsonNumber(obj, "battery", value) )
+    if( jsonInRange(obj, "battery", 0, 100, value) )
         data.battery = value;
-    if( jsonNumber(obj, "battmv", value) )
+    if( jsonInRange(obj, "battmv", 0, 65535, value) )
         data.battmv = value;
     return true;
+}
+
+/**
+ * @brief MqttParse::parseSetPoint
+ * @param payload   set_temp, e.g. "21.5"
+ * @param temp      out
+ * @return false if not a finite number
+ */
+bool MqttParse::parseSetPoint(const QByteArray &payload, double &temp)
+{
+    bool ok;
+    const double d = payload.trimmed().toDouble(&ok);
+    if( !ok || !qIsFinite(d) )
+        return false;
+    temp = d;
+    return true;
+}
+
+/**
+ * @brief MqttParse::subscriptions
+ */
+QVector<MqttParse::Subscription> MqttParse::subscriptions()
+{
+    return {
+        { HA_STATUS_TOPIC,                                      0 },
+        { BASE_TOPIC "/+/" TAIL_SET_TEMP,                       1 },
+        { BASE_TOPIC "/+/" TAIL_CHRONO_SET,                     1 },
+        { BASE_TOPIC "/+/" TAIL_CHRONO_PROFILE_SET,             1 },
+        { MODE_SET_TOPIC,                                       1 },
+        { BASE_TOPIC_SENSOR "/+/" TAIL_DATA,                    1 },
+        { GATEWAY_STATUS_TOPIC,                                 1 },
+    };
+}
+
+/**
+ * @brief MqttParse::refusedWhenRetained
+ * @param topic
+ * @return true for the command topics and the sensor readings
+ */
+bool MqttParse::refusedWhenRetained(const QString &topic)
+{
+    static const char *const tails[] = { TAIL_SET_TEMP, TAIL_CHRONO_SET, TAIL_CHRONO_PROFILE_SET };
+    QString zoneName;
+
+    if( topic == MODE_SET_TOPIC )
+        return true;
+    if( matchZoneTopic(topic, BASE_TOPIC_SENSOR, TAIL_DATA, zoneName) )
+        return true;
+    for(const char *tail : tails)
+    {
+        if( matchZoneTopic(topic, BASE_TOPIC, tail, zoneName) )
+            return true;
+    }
+    return false;
 }
 
 /**

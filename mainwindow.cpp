@@ -70,6 +70,10 @@ MainWindow::MainWindow(ZoneModel *zones, Mqtt *mq, QWidget *parent)
     m_modbusOnline  = true;
 
     connect( mq,        &Mqtt::clientStateChanged,  this, &MainWindow::clientStateChanged );
+    connect( mq,        &Mqtt::gatewayStateChanged, this, [this](int state) {
+        m_gatewayState = state;
+        updateStatusbar();
+    });
     connect( m_zones,   &ZoneModel::zoneChanged,    this, &MainWindow::zoneDataIsChanged );
     connect( m_zones,   &ZoneModel::houseModeChanged, this, &MainWindow::refreshAllZones );
 
@@ -308,7 +312,12 @@ void MainWindow::updateStatusbar()
     else
         modbus = m_modbusOnline ? "Modbus: online" : "Modbus: OFFLINE";
 
-    QStringList parts = { QString("%1 v%2").arg(SW_NAME).arg(SW_VER), m_mqttStatus, modbus };
+    /* only when it matters (the zone cards show the missing readings only
+     * later); known only while connected, so it replaces "MQTT: connected":
+     * the bar has no room for one more field */
+    const QString mqtt = m_gatewayState == GatewayOffline ? QString("RoomSense OFFLINE") : m_mqttStatus;
+
+    QStringList parts = { QString("%1 v%2").arg(SW_NAME).arg(SW_VER), mqtt, modbus };
     if(!m_weatherInfo.isEmpty())
         parts.append(m_weatherInfo);
     setBarRow(0, parts);

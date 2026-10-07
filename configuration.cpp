@@ -306,6 +306,7 @@ TelegramConfig Configuration::loadTelegram() const
     tc.name        = settings.value("name", tc.name).toString().trimmed();
     tc.reminderH   = qMax(0, settings.value("reminder_h", tc.reminderH).toInt());
     tc.mqttDownMin = qMax(1, settings.value("mqtt_down_min", tc.mqttDownMin).toInt());
+    tc.gatewayDownMin = qMax(1, settings.value("gateway_down_min", tc.gatewayDownMin).toInt());
     tc.apiUrl      = settings.value("api_url", tc.apiUrl).toString().trimmed();
     while(tc.apiUrl.endsWith('/'))
         tc.apiUrl.chop(1);
@@ -338,6 +339,38 @@ TelegramConfig Configuration::loadTelegram() const
  * [MODES] window_temp, away_temp, boost_temp (TEMP_MIN..TEMP_MAX, rounded
  * to TEMP_STEP), window_min, boost_min (1..1440)
  */
+/**
+ * @brief Configuration::loadWindow
+ * [WINDOW_DETECTION]: drop_c 0.3...5, window_min 1...60, recover_c
+ * 0.1...drop_c; invalid values keep the defaults
+ */
+WindowConfig Configuration::loadWindow() const
+{
+    QSettings settings(m_path, QSettings::IniFormat);
+    settings.beginGroup("WINDOW_DETECTION");
+    WindowConfig wc;
+    bool ok;
+
+    wc.enabled = settings.value("enabled", wc.enabled).toBool();
+    double v = settings.value("drop_c", wc.dropC).toDouble(&ok);
+    if(ok && v >= 0.3 && v <= 5)
+        wc.dropC = v;
+    else
+        qCWarning(lcConfig) << "Invalid WINDOW_DETECTION/drop_c, using" << wc.dropC;
+    const int min = settings.value("window_min", wc.windowMin).toInt(&ok);
+    if(ok && min >= 1 && min <= 60)
+        wc.windowMin = min;
+    else
+        qCWarning(lcConfig) << "Invalid WINDOW_DETECTION/window_min, using" << wc.windowMin;
+    v = settings.value("recover_c", wc.recoverC).toDouble(&ok);
+    if(ok && v >= 0.1 && v <= wc.dropC)
+        wc.recoverC = v;
+    else
+        qCWarning(lcConfig) << "Invalid WINDOW_DETECTION/recover_c, using" << wc.recoverC;
+    settings.endGroup();
+    return wc;
+}
+
 ModeConfig Configuration::loadModes() const
 {
     QSettings settings(m_path, QSettings::IniFormat);

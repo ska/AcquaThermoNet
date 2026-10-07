@@ -43,6 +43,8 @@ when Telegram is reachable again.
 | Modbus relay board offline / online | alarm |
 | serial port lost / open again | alarm |
 | MQTT broker not connected for `mqtt_down_min` minutes / back | alarm |
+| RoomSense (the sensor gateway) offline for `gateway_down_min` minutes / online again | alarm |
+| window open? / closed? guessed from the temperature of a zone (`[WINDOW_DETECTION]`) | information |
 | start, with a warning if the previous run did not stop cleanly (crash, power loss, watchdog) | info |
 | clean stop | info |
 
